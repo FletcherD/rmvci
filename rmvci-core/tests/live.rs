@@ -399,6 +399,12 @@ fn usb_backend_end_to_end() {
     println!("usb/host     21 44 -> {} bytes", b.len());
     assert_eq!(b.len(), 40);
     assert_eq!(&b[..2], &[0x61, 0x44]);
+
+    // Close explicitly: dropping at process exit can race the actor's
+    // teardown, and then the transport never drops, so ftdi_sio is never
+    // rebound and the cable loses its tty until replug.
+    drop(host);
+    dev.close();
 }
 
 /// Quantify the latency-timer win: the same request/response loop over the

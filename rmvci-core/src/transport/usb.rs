@@ -69,12 +69,20 @@ pub struct UsbTransport {
 }
 
 impl Drop for UsbTransport {
-    /// Give the cable back to `ftdi_sio`, which restores its `/dev/ttyUSBn`
-    /// node. Without this the tty stays missing until the cable is replugged,
-    /// which is bafflingly hard to diagnose from the outside.
+    /// Hand the cable back to `ftdi_sio` so its `/dev/ttyUSBn` node returns.
+    ///
+    /// Releasing the interface already triggers the rebind, so this call
+    /// normally reports "kernel driver already attached" — it is here as a
+    /// belt-and-braces for platforms or versions that do not.
+    ///
+    /// **The rebind only happens if this actually runs.** A process that
+    /// exits while the session is still tearing down skips it, and the cable
+    /// then has no tty until it is replugged — which is baffling from the
+    /// outside. Call [`crate::Device::close`], which waits for teardown,
+    /// rather than relying on drop order at process exit.
     fn drop(&mut self) {
         if let Err(e) = self.device.attach_kernel_driver(0) {
-            tracing::debug!(error = %e, "could not hand the interface back to the kernel driver");
+            tracing::debug!(error = %e, "kernel driver rebind (usually already done on release)");
         }
     }
 }

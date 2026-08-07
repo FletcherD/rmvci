@@ -171,11 +171,18 @@ let dev = Device::open_usb(Some("A69QL5OE"), Default::default())?;    // raw USB
 ```
 
 `UsbTransport` drives the FT232R directly with [nusb](https://github.com/kevinmehall/nusb)
-(pure Rust, no libusb). It takes the interface away from `ftdi_sio` while
-open and hands it back on drop, so the `/dev/ttyUSBn` node disappears and
-returns around it — give udev a couple of seconds to recreate the
-`/dev/serial/by-id` symlink before expecting it. It needs write access to the
-`/dev/bus/usb` node, which on most desktops the `plugdev` ACL already grants.
+(pure Rust, no libusb). It needs write access to the `/dev/bus/usb` node,
+which on most desktops the `plugdev` ACL already grants.
+
+It takes the interface away from `ftdi_sio` while open, so the
+`/dev/ttyUSBn` node disappears and comes back around it. Two things to know:
+
+- **Call `Device::close()`.** The rebind happens when the transport is
+  dropped, and a process that just exits can race the actor's teardown and
+  skip it — leaving the cable with no tty until it is replugged, which is
+  very confusing from the outside. `close()` waits.
+- Give udev a couple of seconds to recreate the `/dev/serial/by-id` symlink
+  before concluding it did not come back.
 
 **Measured on the cable** (`usb_vs_serial_latency`), median per exchange:
 
