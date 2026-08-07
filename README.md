@@ -73,12 +73,21 @@ error messages:
 | Flow-control block size | ignored (waits for FC once, then floods) | honored |
 | STmin | ignored (fixed ~1 ms) | honored, incl. the 0xF1–0xF9 sub-ms range |
 | `FS=WAIT` / `FS=OVFLW` | treated as CTS | honored / reported |
-| Receive reassembly | correct (full 12-bit FF_DL) | correct |
+| Receive reassembly | correct FF_DL handling, but into a **single global scratch buffer shared by every protocol object, appended with no bounds check** — a response beyond ~1500 bytes corrupts adapter RAM | on the host, bounded by `Vec` |
+| CF sequence error on receive | dropped silently, no notification | `SequenceError { expected, got }` |
 | Speed | fast (segmentation on the MCU) | ~20–35 ms per frame — every frame is a USB round trip |
 
 Both implement `UdsTransport`, so switching is one line. Use the firmware
 path for short requests (the `21 43` case); use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
+
+Worth being explicit about the reassembly row, because it is the one failure
+the driver cannot defend against: on the firmware path the adapter does the
+reassembly, so an ECU that returns a very long response can overrun its
+scratch buffer, and nothing on the host side gets a say. On the host path the
+firmware only ever sees single CAN frames, so that class of failure does not
+exist. (The ~1500-byte figure is from firmware analysis and is not
+independently measured — treat it as an order of magnitude, not a threshold.)
 
 ## Measured on the real cable
 
