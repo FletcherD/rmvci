@@ -150,20 +150,36 @@ fn live_can_firmware_vs_host() {
     println!("both paths byte-identical");
 }
 
-/// Measure the adapter's real idle tolerance, with and without a connected
-/// channel. The C driver polled every 15 ms on the premise that "the adapter
-/// resets if left idle"; this is what decides the actor's default.
+/// Characterise what actually decays when the link sits idle, layer by
+/// layer. This is what decides whether the actor needs a keepalive at all.
 ///
-/// Run it as two cases because a bare DES session and a connected CAN
-/// channel are different states — a watchdog could plausibly apply to one and
-/// not the other.
+/// Asking only "is the session alive?" (a device-level READ_VERSION) is not
+/// enough: the adapter could drop a channel or forget its acceptance filter
+/// while still answering device commands cheerfully. So after each idle gap
+/// the probe walks up the stack and reports the *first* layer that fails:
+///
+///   1. session   — READ_VERSION (CMD 0x03), device-level
+///   2. channel   — a READ_MSG poll on the connected channel; the firmware
+///                  answers ERR_INVALID_CHANNEL_ID if the channel is gone
+///   3. exchange  — a real 21 43 to the bench ECU, which additionally needs
+///                  the acceptance filter and the CAN bus timing to be intact
+///
+/// If stage 3 fails it then tries to recover, which says what a driver would
+/// have to *do* about it: reinstall the filter, or reconnect the channel.
+///
+/// Needs `re/bench/isotp_responder.py` running (stage 3 talks to it).
 #[test]
-#[ignore = "needs the Mini-VCI cable (set RMVCI_PORT); takes ~20 minutes"]
-fn live_keepalive_threshold() {
-    use rmvci_core::{CanConfig, DeviceConfig, Iso15765};
+#[ignore = "needs the cable + bench responder (set RMVCI_PORT); takes ~30 minutes"]
+fn live_idle_decay_characterisation() {
+    use rmvci_core::{CanConfig, CanId, DeviceConfig, FlowControlFilter, Iso15765};
     use std::sync::Arc;
 
-    // Keepalive far beyond every gap so the actor stays silent during them.
+    let tx = CanId::Std(0x7c4);
+    let rx = CanId::Std(0x7cc);
+    let probe_timeout = Duration::from_secs(2);
+
+    // Keepalive far beyond every gap so the actor stays silent during them —
+    // this test measures the adapter, not our poll.
     let open = || {
         Device::open_with(DeviceConfig {
             port: Some(port()),
@@ -173,39 +189,139 @@ fn live_keepalive_threshold() {
         .expect("open")
     };
 
-    let gaps = [1_000u64, 5_000, 20_000, 60_000, 120_000, 300_000];
+    let gaps_s = [5u64, 30, 60, 300, 900];
 
-    for connected in [false, true] {
+    println!("\n=== idle decay: which layer dies first, and when ===");
+    println!("(each row: session / channel / exchange after the gap)\n");
+
+    for gap_s in gaps_s {
+        let dev = open();
+        let mut ch = dev.connect::<Iso15765>(CanConfig::default()).expect("connect");
+        ch.set_filter(FlowControlFilter::exact(rx, tx)).expect("filter");
+
+        // Baseline: prove the whole stack works *before* the gap, so a
+        // failure afterwards is attributable to the idling and not to setup.
+        ch.send(tx, &[0x21, 0x43]).expect("baseline send");
+        let baseline = ch.read(probe_timeout).expect("baseline exchange must work");
+        assert_eq!(&baseline.data[4..6], &[0x61, 0x43], "bench responder not answering");
+
+        std::thread::sleep(Duration::from_secs(gap_s));
+
+        // --- staged probe, cheapest layer first ---
+        let session = dev.firmware_version();
+        let channel = ch.poll(Duration::from_millis(500));
+        let exchange = ch
+            .send(tx, &[0x21, 0x43])
+            .and_then(|()| ch.read(probe_timeout))
+            .map(|m| m.data[4..].to_vec());
+
+        fn verdict<T>(r: &Result<T, rmvci_core::Error>) -> &'static str {
+            if r.is_ok() { "ok  " } else { "DEAD" }
+        }
         println!(
-            "\n--- idle tolerance, channel {} ---",
-            if connected { "CONNECTED (ISO15765)" } else { "not connected" }
+            "idle {gap_s:>4} s | session {} | channel {} | exchange {}",
+            verdict(&session),
+            verdict(&channel),
+            verdict(&exchange)
         );
-        let mut survived_all = true;
-        for gap_ms in gaps {
-            let dev = open();
-            let chan =
-                connected.then(|| dev.connect::<Iso15765>(CanConfig::default()).expect("connect"));
-            dev.firmware_version().expect("baseline query");
+        if let Err(e) = &session {
+            println!("           session error: {e}");
+        }
+        if let Err(e) = &channel {
+            println!("           channel error: {e}");
+        }
 
-            std::thread::sleep(Duration::from_millis(gap_ms));
-            let outcome = dev.firmware_version();
-            drop(chan);
-            dev.close(); // release the port before the next iteration reopens it
+        // --- if the exchange died, find out what fixes it ---
+        match &exchange {
+            Ok(data) => {
+                assert_eq!(&data[..2], &[0x61, 0x43], "exchange returned the wrong payload");
+            }
+            Err(e) => {
+                println!("           exchange error: {e}");
 
-            match outcome {
-                Ok(_) => println!("  idle {gap_ms:>7} ms: survived"),
-                Err(e) => {
-                    println!("  idle {gap_ms:>7} ms: DEAD ({e})");
-                    println!("  --> tolerance is between this gap and the previous one");
-                    survived_all = false;
-                    break;
+                let refiltered = ch
+                    .set_filter(FlowControlFilter::exact(rx, tx))
+                    .and_then(|()| ch.send(tx, &[0x21, 0x43]))
+                    .and_then(|()| ch.read(probe_timeout));
+                if refiltered.is_ok() {
+                    println!("           --> RECOVERED by reinstalling the filter");
+                } else {
+                    drop(ch);
+                    let mut fresh =
+                        dev.connect::<Iso15765>(CanConfig::default()).expect("reconnect");
+                    fresh.set_filter(FlowControlFilter::exact(rx, tx)).expect("filter");
+                    let reconnected = fresh
+                        .send(tx, &[0x21, 0x43])
+                        .and_then(|()| fresh.read(probe_timeout));
+                    println!(
+                        "           --> filter reinstall did NOT help; reconnect {}",
+                        if reconnected.is_ok() { "RECOVERED" } else { "also failed" }
+                    );
+                    dev.close();
+                    continue;
                 }
             }
         }
-        if survived_all {
-            println!("  survived every gap up to {} s", gaps.last().unwrap() / 1000);
+
+        drop(ch);
+        dev.close(); // release the port before the next iteration reopens it
+    }
+    println!("\n(gaps tested up to {} s)", gaps_s.last().unwrap());
+}
+
+/// Send a multi-frame message so `re/bench/isotp_fc_probe.py` can measure
+/// whether this path honours the flow control it is given.
+///
+/// This is the experiment that settles the last claim in `re/FINDINGS.md`
+/// resting on static analysis alone (§10.3: the firmware's ISO-TP transmit
+/// ignores BS and STmin), and at the same time proves the host path fixes it.
+///
+/// ```sh
+/// python3 re/bench/isotp_fc_probe.py --bs 2 --stmin 50 &
+/// RMVCI_PORT=... cargo test --test live fc_firmware -- --ignored --nocapture
+/// RMVCI_PORT=... cargo test --test live fc_host     -- --ignored --nocapture
+/// ```
+///
+/// The probe prints the verdict; this side only has to transmit.
+#[cfg(feature = "serial")]
+fn send_multiframe_for_probe(host_path: bool) {
+    use rmvci_core::{CanId, FirmwareIsoTp, IsoTp, IsoTpConfig};
+
+    let tx = CanId::Std(0x7c4);
+    let rx = CanId::Std(0x7cc);
+    // 60 bytes = First Frame + 8 consecutive frames, enough for a BS of 2 to
+    // force several blocks.
+    let payload: Vec<u8> = (0..60u8).collect();
+
+    let dev = open_retrying(&port());
+    if host_path {
+        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx)).expect("host channel");
+        match tp.send(&payload) {
+            Ok(()) => println!("host path: sent {} bytes", payload.len()),
+            Err(e) => println!("host path: send ended with {e}"),
+        }
+    } else {
+        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel");
+        match tp.send(&payload) {
+            Ok(()) => println!("firmware path: sent {} bytes", payload.len()),
+            Err(e) => println!("firmware path: send ended with {e}"),
         }
     }
+    // Let the probe finish collecting before the port closes.
+    std::thread::sleep(Duration::from_secs(3));
+    dev.close();
+}
+
+#[test]
+#[ignore = "needs the cable + isotp_fc_probe.py (set RMVCI_PORT)"]
+fn live_fc_firmware_path() {
+    send_multiframe_for_probe(false);
+}
+
+#[test]
+#[ignore = "needs the cable + isotp_fc_probe.py (set RMVCI_PORT)"]
+fn live_fc_host_path() {
+    send_multiframe_for_probe(true);
 }
 
 /// M2 smoke: open + handshake, identity, and 60 s of keepalive survival.
