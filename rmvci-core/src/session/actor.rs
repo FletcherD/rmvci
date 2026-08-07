@@ -283,15 +283,24 @@ impl<T: Transport> Actor<T> {
 
     /// All request senders dropped: disconnect every channel (0x08 each),
     /// close the encrypted session (0x02), release the port.
+    ///
+    /// Every step continues past a failure — the port must be released even
+    /// if the adapter has stopped answering — but nothing is swallowed
+    /// silently, because a failure here is exactly what leaves the adapter
+    /// needing a physical replug.
     fn teardown(&mut self) {
         for proto in std::mem::take(&mut self.connected) {
-            let _ = self.transact_status(
+            if let Err(e) = self.transact_status(
                 &inner::disconnect(proto),
                 Cmd::Disconnect,
                 Duration::from_millis(500),
-            );
+            ) {
+                tracing::warn!(?proto, error = %e, "channel disconnect failed during teardown");
+            }
         }
-        let _ = self.transact(&inner::session_close(), Duration::from_millis(500));
+        if let Err(e) = self.transact(&inner::session_close(), Duration::from_millis(500)) {
+            tracing::warn!(error = %e, "session close failed during teardown");
+        }
         tracing::debug!("session closed");
     }
 }

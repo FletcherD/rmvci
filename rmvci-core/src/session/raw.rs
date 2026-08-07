@@ -155,8 +155,16 @@ impl RawChannel {
 
 impl Drop for RawChannel {
     /// Best-effort per-channel disconnect (0x08). The session itself stays
-    /// up; it closes when the last Device handle drops.
+    /// up; it closes when the last Device handle drops. `Drop` cannot
+    /// report, so a failure is logged — it leaves a channel connected on the
+    /// adapter, and the firmware only has three slots.
     fn drop(&mut self) {
-        let _ = self.dev.disconnect_proto(self.proto);
+        if let Err(e) = self.dev.disconnect_proto(self.proto) {
+            tracing::warn!(
+                proto = ?self.proto,
+                error = %e,
+                "channel disconnect failed; the adapter may still hold this channel"
+            );
+        }
     }
 }

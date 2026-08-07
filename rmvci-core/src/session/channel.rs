@@ -31,7 +31,12 @@ impl<P: Protocol> Channel<P> {
     pub fn set_filter(&mut self, filter: P::Filter) -> Result<(), Error> {
         let enc = filter.encode();
         if let Some(old) = self.current_filter.take() {
-            let _ = self.raw.stop_filter(old);
+            // Retiring the old descriptor is bookkeeping — the new filter
+            // overwrites the hardware entry either way — so a failure here
+            // must not stop the install. It is still worth seeing.
+            if let Err(e) = self.raw.stop_filter(old) {
+                tracing::warn!(filter_id = old, error = %e, "could not retire the previous filter");
+            }
         }
         let id = self.next_filter_id;
         self.next_filter_id += 1;
