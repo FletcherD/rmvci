@@ -9,6 +9,7 @@
 //! prius-hvac                                   # $MVCI_PORT or /dev/ttyUSB0
 //! prius-hvac /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
 //! prius-hvac --isotp host --watch              # host-side ISO-TP, poll forever
+//! RUST_LOG=rmvci_core=trace prius-hvac         # hex dump of every exchange
 //! ```
 //!
 //! Note the `7C4` addressing itself is *unverified on the Prius* — it comes
@@ -90,10 +91,7 @@ fn run() -> Result<(), Error> {
 
     let port = resolve_port(args.port.as_deref());
     println!("opening {port} ({:?} ISO-TP)", args.isotp);
-    let dev = Device::open_with(DeviceConfig {
-        port: Some(port),
-        ..DeviceConfig::default()
-    })?;
+    let dev = Device::open_with(DeviceConfig { port: Some(port), ..DeviceConfig::default() })?;
     println!("firmware: {}", dev.firmware_version()?);
 
     let tx = CanId::Std(ECU_TX);
@@ -133,6 +131,16 @@ fn run() -> Result<(), Error> {
 }
 
 fn main() -> ExitCode {
+    // `RUST_LOG=rmvci_core=trace` dumps every inner command and reply — the
+    // equivalent of the C driver's MVCI_DEBUG=1.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_target(false)
+        .init();
+
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {

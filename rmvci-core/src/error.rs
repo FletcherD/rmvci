@@ -91,7 +91,9 @@ pub enum Error {
     Protocol(#[from] InvalidProtocolId),
     #[error(transparent)]
     IsoTp(#[from] IsoTpError),
-    #[error("no reply from the adapter within {0:?} (wedged? reopening the port pulses DTR/RTS and resets the MCU)")]
+    #[error(
+        "no reply from the adapter within {0:?} (wedged? reopening the port pulses DTR/RTS and resets the MCU)"
+    )]
     Timeout(Duration),
     #[error("adapter rejected {cmd:?}: {status:?}")]
     Rejected { cmd: Cmd, status: DeviceStatus },

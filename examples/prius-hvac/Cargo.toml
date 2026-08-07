@@ -8,3 +8,4 @@ license.workspace = true
 
 [dependencies]
 rmvci-core = { path = "../../rmvci-core" }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

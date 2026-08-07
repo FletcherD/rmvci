@@ -52,9 +52,8 @@ fn dlopen_resolves_and_calls_all_exports() {
             0x1a // ERR_INVALID_DEVICE_ID
         );
 
-        let get_last_error: libloading::Symbol<
-            unsafe extern "system" fn(*mut c_char) -> c_long,
-        > = lib.get(b"PassThruGetLastError").unwrap();
+        let get_last_error: libloading::Symbol<unsafe extern "system" fn(*mut c_char) -> c_long> =
+            lib.get(b"PassThruGetLastError").unwrap();
         assert_eq!(get_last_error(std::ptr::null_mut()), 0x04); // ERR_NULL_PARAMETER
         let mut buf = [0 as c_char; 80];
         assert_eq!(get_last_error(buf.as_mut_ptr()), 0x00);

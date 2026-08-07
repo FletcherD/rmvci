@@ -80,6 +80,18 @@ Both implement `UdsTransport`, so switching is one line. Use the firmware
 path for short requests (the `21 43` case); use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
 
+## Debugging
+
+The driver logs through `tracing`; install any subscriber and set `RUST_LOG`.
+`rmvci_core=trace` hex-dumps every inner command and reply (what
+`MVCI_DEBUG=1` did in the C driver), `rmvci_core=debug` shows handshakes and
+connect retries, and `warn` reports keepalive failures and the FTDI latency
+timer it could not set.
+
+```sh
+RUST_LOG=rmvci_core=trace cargo run -p prius-hvac -- /dev/ttyUSB0
+```
+
 ## Throughput: fix the FTDI latency timer
 
 The protocol is strict request/response, and the FT232R holds any reply

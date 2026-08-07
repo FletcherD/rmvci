@@ -116,8 +116,7 @@ fn keepalive_fires_when_idle_with_exact_bytes() {
 #[test]
 fn silent_adapter_is_declared_wedged_and_fails_fast() {
     // Handshake succeeds, then the adapter never answers again.
-    let dev =
-        Device::open_transport(MockTransport::new(handshake_steps()), cfg(15)).expect("open");
+    let dev = Device::open_transport(MockTransport::new(handshake_steps()), cfg(15)).expect("open");
 
     // Three failed keepalives are needed; give them time to happen.
     std::thread::sleep(Duration::from_millis(200));

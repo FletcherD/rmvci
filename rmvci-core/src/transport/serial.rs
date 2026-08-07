@@ -79,9 +79,7 @@ impl Transport for SerialTransport {
         };
         let node = format!("/sys/bus/usb-serial/devices/{name}/latency_timer");
 
-        let current = std::fs::read_to_string(&node)
-            .ok()
-            .and_then(|s| s.trim().parse::<u8>().ok());
+        let current = std::fs::read_to_string(&node).ok().and_then(|s| s.trim().parse::<u8>().ok());
         if let Some(ms) = current
             && ms <= TARGET
         {

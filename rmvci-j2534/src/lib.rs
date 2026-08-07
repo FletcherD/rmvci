@@ -224,9 +224,8 @@ pub unsafe extern "system" fn PassThruConnect(
 pub extern "system" fn PassThruDisconnect(channel_id: c_ulong) -> c_long {
     guard(|| {
         let mut slots = SLOTS.lock().unwrap();
-        let chan = slot_from_ch(channel_id)
-            .and_then(|i| slots[i].as_mut())
-            .and_then(|s| s.chan.take());
+        let chan =
+            slot_from_ch(channel_id).and_then(|i| slots[i].as_mut()).and_then(|s| s.chan.take());
         match chan {
             Some(chan) => {
                 drop(chan); // 0x08 on the wire; the session stays up
@@ -494,12 +493,12 @@ pub unsafe extern "system" fn PassThruIoctl(
             }
             STATUS_NOERROR
         }),
-        CLEAR_PERIODIC_MSGS => with_chan(channel_id, |slot| {
-            match slot.chan.as_mut().unwrap().clear_periodic() {
+        CLEAR_PERIODIC_MSGS => {
+            with_chan(channel_id, |slot| match slot.chan.as_mut().unwrap().clear_periodic() {
                 Ok(()) => STATUS_NOERROR,
                 Err(e) => fail(&e),
-            }
-        }),
+            })
+        }
         FAST_INIT => with_chan(channel_id, |slot| {
             let inp = input.cast::<PassthruMsg>();
             if inp.is_null() || unsafe { (*inp).data_size } == 0 {

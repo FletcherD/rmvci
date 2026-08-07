@@ -102,8 +102,7 @@ impl IsoTp {
     }
 
     pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let mut tx =
-            TxMachine::new(payload, self.cfg.padding, self.cfg.n_bs, self.cfg.wft_max)?;
+        let mut tx = TxMachine::new(payload, self.cfg.padding, self.cfg.n_bs, self.cfg.wft_max)?;
         loop {
             match tx.next(Instant::now())? {
                 TxAction::Send(frame) => self.chan.send(self.cfg.tx_id, &frame)?,

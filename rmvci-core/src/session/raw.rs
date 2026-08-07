@@ -131,9 +131,8 @@ impl RawChannel {
 
     /// K-line FAST_INIT; returns the ECU key bytes.
     pub fn fast_init(&mut self, init: &[u8]) -> Result<Vec<u8>, Error> {
-        let resp = self
-            .dev
-            .transact(inner::fast_init(self.proto, init), Duration::from_millis(3000))?;
+        let resp =
+            self.dev.transact(inner::fast_init(self.proto, init), Duration::from_millis(3000))?;
         if resp.len() < 3 || resp[2] != Cmd::Ioctl as u8 {
             return Err(CodecError::MalformedReply("not a fast-init reply").into());
         }
@@ -142,7 +141,12 @@ impl RawChannel {
         Ok(resp[3..3 + mlen].to_vec())
     }
 
-    fn transact_status(&self, cmd_bytes: Vec<u8>, cmd: Cmd, timeout: Duration) -> Result<(), Error> {
+    fn transact_status(
+        &self,
+        cmd_bytes: Vec<u8>,
+        cmd: Cmd,
+        timeout: Duration,
+    ) -> Result<(), Error> {
         let resp = self.dev.transact(cmd_bytes, timeout)?;
         let status = inner::status_of(&resp, cmd)?;
         if status.is_ok() { Ok(()) } else { Err(Error::Rejected { cmd, status }) }

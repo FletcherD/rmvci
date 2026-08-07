@@ -173,9 +173,7 @@ impl Device {
         timeout: Duration,
     ) -> Result<Option<RxMsg>, Error> {
         let (rtx, rrx) = mpsc::channel();
-        self.tx
-            .send(Request::Poll { proto, timeout, reply: rtx })
-            .map_err(|_| Error::Closed)?;
+        self.tx.send(Request::Poll { proto, timeout, reply: rtx }).map_err(|_| Error::Closed)?;
         rrx.recv().map_err(|_| Error::Closed)?
     }
 }

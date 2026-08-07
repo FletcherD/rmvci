@@ -30,7 +30,9 @@ fn handshake_steps() -> Vec<Step> {
         Step::exchange(frame::encode_plain(&[]).unwrap(), Vec::new()),
         Step::exchange(
             frame::encode_plain(&inner::identify()).unwrap(),
-            vec![0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9],
+            vec![
+                0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9,
+            ],
         ),
     ]
 }
@@ -81,16 +83,8 @@ fn host_path_single_and_multi_frame() {
         status_reply(0x07),
     ));
     steps.push(Step::exchange(
-        enc(&inner::start_filter(
-            ProtocolId::Can,
-            0x000e_7a00,
-            1,
-            &[0xff; 4],
-            &RX_ID,
-            None,
-            4,
-        )
-        .unwrap()),
+        enc(&inner::start_filter(ProtocolId::Can, 0x000e_7a00, 1, &[0xff; 4], &RX_ID, None, 4)
+            .unwrap()),
         status_reply(0x0b),
     ));
 
@@ -141,11 +135,8 @@ fn host_path_single_and_multi_frame() {
     }
 
     let device = dev(steps);
-    let mut tp = IsoTp::new(
-        &device,
-        IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc)),
-    )
-    .expect("isotp channel");
+    let mut tp = IsoTp::new(&device, IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc)))
+        .expect("isotp channel");
 
     let r1 = tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
     assert_eq!(r1, [0x61, 0x43, 0x7b, 0x79]);

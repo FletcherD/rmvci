@@ -56,9 +56,7 @@ pub fn decode_plain(frame: &[u8]) -> Result<&[u8], CodecError> {
     if rd_u16(frame) != frame.len() {
         return Err(CodecError::LengthMismatch { field: rd_u16(frame), actual: frame.len() });
     }
-    let (body, &[wire]) = frame.split_at(frame.len() - 1) else {
-        unreachable!()
-    };
+    let (body, &[wire]) = frame.split_at(frame.len() - 1) else { unreachable!() };
     let computed = xorsum(body);
     if computed != wire {
         return Err(CodecError::BadChecksum { wire, computed });
@@ -90,7 +88,11 @@ pub fn decode_encrypted(key: &[u8; 8], frame: &[u8]) -> Result<Vec<u8>, CodecErr
 
     let plain_sum = frame[0] ^ frame[1] ^ xorsum(&inner);
     if wire != cipher_sum && wire != plain_sum {
-        return Err(CodecError::BadEncryptedChecksum { wire, cipher: cipher_sum, plain: plain_sum });
+        return Err(CodecError::BadEncryptedChecksum {
+            wire,
+            cipher: cipher_sum,
+            plain: plain_sum,
+        });
     }
     Ok(inner)
 }

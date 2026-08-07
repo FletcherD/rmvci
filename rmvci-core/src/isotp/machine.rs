@@ -41,7 +41,9 @@ pub enum TxAction {
     Send(Vec<u8>),
     /// Wait for a flow-control frame until the deadline, feeding candidate
     /// frames through [`TxMachine::on_frame`].
-    WaitFc { deadline: Instant },
+    WaitFc {
+        deadline: Instant,
+    },
     /// STmin pacing: do nothing until this instant.
     WaitUntil(Instant),
     Done,

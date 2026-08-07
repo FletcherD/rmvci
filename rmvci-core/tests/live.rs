@@ -47,9 +47,7 @@ fn live_kline_regression() {
     let dev = Device::open(port()).expect("open + handshake");
     println!("DES key: {:02x?}", dev.des_key());
 
-    let mut ch = dev
-        .connect::<Iso14230>(KLineConfig::default())
-        .expect("connect ISO14230 @ 10400");
+    let mut ch = dev.connect::<Iso14230>(KLineConfig::default()).expect("connect ISO14230 @ 10400");
 
     // The vendor tool's three header filters; the typed API keeps one live
     // (matching the single hardware slot), so install them in sequence to
@@ -61,8 +59,18 @@ fn live_kline_regression() {
 
     // The 12 SET_CONFIG params the vendor app sends for ISO14230.
     const CFG: [(u32, u32); 12] = [
-        (1, 9600), (7, 40), (10, 10), (11, 10), (19, 300), (20, 35),
-        (21, 50), (14, 25), (15, 20), (16, 20), (17, 25), (18, 10),
+        (1, 9600),
+        (7, 40),
+        (10, 10),
+        (11, 10),
+        (19, 300),
+        (20, 35),
+        (21, 50),
+        (14, 25),
+        (15, 20),
+        (16, 20),
+        (17, 25),
+        (18, 10),
     ];
     for (param, value) in CFG {
         ch.set_config(param, value).unwrap_or_else(|e| panic!("SET_CONFIG {param}: {e}"));
@@ -175,8 +183,8 @@ fn live_keepalive_threshold() {
         let mut survived_all = true;
         for gap_ms in gaps {
             let dev = open();
-            let chan = connected
-                .then(|| dev.connect::<Iso15765>(CanConfig::default()).expect("connect"));
+            let chan =
+                connected.then(|| dev.connect::<Iso15765>(CanConfig::default()).expect("connect"));
             dev.firmware_version().expect("baseline query");
 
             std::thread::sleep(Duration::from_millis(gap_ms));
@@ -195,10 +203,7 @@ fn live_keepalive_threshold() {
             }
         }
         if survived_all {
-            println!(
-                "  survived every gap up to {} s",
-                gaps.last().unwrap() / 1000
-            );
+            println!("  survived every gap up to {} s", gaps.last().unwrap() / 1000);
         }
     }
 }

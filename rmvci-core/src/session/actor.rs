@@ -23,7 +23,11 @@ const WEDGE_THRESHOLD: u8 = 3;
 
 pub(crate) enum Request {
     /// Encrypt an inner command, send it, return the decrypted reply inner.
-    Transact { inner: Vec<u8>, timeout: Duration, reply: mpsc::Sender<Result<Vec<u8>, Error>> },
+    Transact {
+        inner: Vec<u8>,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<Vec<u8>, Error>>,
+    },
     /// CONNECT with the C driver's recovery: after a prior Disconnect the
     /// adapter ignores Connect until it is reset, so on rejection re-run the
     /// handshake and retry once (serial.c:427).
@@ -33,7 +37,10 @@ pub(crate) enum Request {
         baud: u32,
         reply: mpsc::Sender<Result<(), Error>>,
     },
-    Disconnect { proto: ProtocolId, reply: mpsc::Sender<Result<(), Error>> },
+    Disconnect {
+        proto: ProtocolId,
+        reply: mpsc::Sender<Result<(), Error>>,
+    },
     /// One READ_MSG poll, draining the actor-side queue first.
     Poll {
         proto: ProtocolId,
@@ -101,7 +108,9 @@ fn open<T: Transport>(io: &mut T, cfg: &DeviceConfig) -> Result<KeyedLink, Error
 
     match io.optimize_latency() {
         LatencyResult::Set { millis } => tracing::info!(millis, "FTDI latency timer set"),
-        LatencyResult::AlreadyLow { millis } => tracing::debug!(millis, "FTDI latency timer already low"),
+        LatencyResult::AlreadyLow { millis } => {
+            tracing::debug!(millis, "FTDI latency timer already low")
+        }
         LatencyResult::Failed { reason } => tracing::warn!(
             %reason,
             "FTDI latency timer left at its default; every exchange pays up to 16 ms extra"

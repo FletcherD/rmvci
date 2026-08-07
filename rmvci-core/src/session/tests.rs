@@ -86,7 +86,8 @@ fn connect_retries_after_rehandshake() {
     steps.push(Step::exchange(connect_frame, status_reply(0x07, 0x00)));
 
     let dev = Device::open_transport(MockTransport::new(steps), cfg(60_000)).expect("open");
-    dev.connect_proto(ProtocolId::Iso14230, 4096, 10400).expect("connect should succeed after rehandshake");
+    dev.connect_proto(ProtocolId::Iso14230, 4096, 10400)
+        .expect("connect should succeed after rehandshake");
 }
 
 /// A message the keepalive happened to drain must reach the next poll, not
