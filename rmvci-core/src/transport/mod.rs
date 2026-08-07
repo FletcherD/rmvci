@@ -6,12 +6,16 @@ use std::time::Duration;
 
 use crate::error::TransportError;
 
+#[cfg(feature = "jni-transport")]
+pub mod jni;
 pub mod mock;
 #[cfg(feature = "serial")]
 pub mod serial;
 #[cfg(feature = "usb")]
 pub mod usb;
 
+#[cfg(feature = "jni-transport")]
+pub use jni::JniTransport;
 pub use mock::MockTransport;
 #[cfg(feature = "serial")]
 pub use serial::SerialTransport;

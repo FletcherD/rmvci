@@ -1,0 +1,17 @@
+[package]
+name = "rmvci-android"
+description = "JNI bindings so an Android app can drive the Mini-VCI through rmvci-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No default features: `serial` would pull in serialport, which is useless
+# on Android — the bytes come from Java.
+rmvci-core = { path = "../rmvci-core", default-features = false, features = ["jni-transport"] }
+jni = "0.21"
+tracing = { version = "0.1", default-features = false, features = ["std"] }

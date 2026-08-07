@@ -4,12 +4,15 @@ A Rust driver for the Toyota **Mini-VCI** J2534 cable (XHorse M-VCI: FTDI
 FT232R + NXP LPC2119 running "J2534 MINI V1.03"), on Linux, macOS and
 Windows.
 
-Two API surfaces over one implementation:
+Three API surfaces over one implementation:
 
 - **`rmvci-core`** — a native Rust API: `Device`, typed `Channel<P>`, and
   ISO 15765-2 both through the firmware and host-side over raw CAN.
 - **`rmvci-j2534`** — a `cdylib` exporting the 14 SAE J2534 `PassThru*`
   functions, so Techstream and other J2534 hosts can load it.
+- **`rmvci-android`** — JNI entry points so an Android app can drive the
+  cable, with Java owning the USB permission. *(Compiles for Android; not yet
+  run on a device.)*
 
 Everything the driver does on the wire is derived from reverse engineering
 the cable's own firmware (`../re/FINDINGS.md`) and is validated against
@@ -19,7 +22,7 @@ hardware.
 
 ```sh
 cargo build --workspace
-cargo test --workspace          # 54 offline tests, no hardware needed
+cargo test --workspace          # 56 offline tests, no hardware needed
 
 # Read the Prius A/C amplifier air-mix servo (7C4, KWP 21 43):
 cargo run -p prius-hvac -- /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
@@ -159,6 +162,7 @@ backend is swappable and everything above it is untouched.
 |---|---|---|
 | `SerialTransport` | `serial` (default) | normal desktop use via the kernel's `ftdi_sio` |
 | `UsbTransport` | `usb` | you want the latency fix without root, or there is no `ftdi_sio` |
+| `JniTransport` | `jni-transport` | Android: Java owns the port, Rust calls back up (see [`rmvci-android`](rmvci-android/README.md)) |
 | `MockTransport` | always | tests; scripted byte-exact exchanges |
 
 ```rust
@@ -228,7 +232,8 @@ rmvci-core/src/
   transport/   Transport trait; serialport backend, scripted mock
   session/     port-owning actor, handshake, Device, RawChannel, Channel<P>
   isotp/       sans-IO Tx/Rx machines + the two ISO-TP clients
-rmvci-j2534/   the 14 PassThru exports
+rmvci-j2534/   the 14 PassThru exports (desktop only — nothing loads J2534 on Android)
+rmvci-android/ JNI entry points for an Android app (compiles for aarch64, untested on a device)
 examples/prius-hvac/
 ```
 

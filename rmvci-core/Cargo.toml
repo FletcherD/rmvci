@@ -14,6 +14,8 @@ serial = ["dep:serialport"]
 # Direct FT232R access over pure-Rust USB: no ftdi_sio, and the latency
 # timer becomes settable without root.
 usb = ["dep:nusb"]
+# Android: byte I/O performed by a Java UsbSerialPort via JNI.
+jni-transport = ["dep:jni"]
 
 [dependencies]
 des = "0.8"
@@ -21,6 +23,7 @@ thiserror = "2"
 bitflags = "2"
 serialport = { version = "4", default-features = false, optional = true }
 nusb = { version = "0.2", optional = true }
+jni = { version = "0.21", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
