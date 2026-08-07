@@ -12,3 +12,6 @@ crate-type = ["cdylib", "lib"]
 
 [dependencies]
 rmvci-core = { path = "../rmvci-core" }
+
+[dev-dependencies]
+libloading = "0.8"

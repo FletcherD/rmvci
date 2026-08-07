@@ -71,6 +71,28 @@ impl Device {
         self.key
     }
 
+    /// Open a typed channel. The firmware supports at most 3 concurrent
+    /// channels; a fourth Connect is rejected by the adapter.
+    pub fn connect<P: crate::session::protocol::Protocol>(
+        &self,
+        cfg: P::Config,
+    ) -> Result<crate::session::Channel<P>, Error> {
+        use crate::session::protocol::ChannelConfig;
+        let (flags, baud) = cfg.wire();
+        let raw = crate::session::RawChannel::connect(self.clone(), P::ID, flags, baud)?;
+        Ok(crate::session::Channel::new(raw))
+    }
+
+    /// Open a dynamically-typed channel (the J2534 shim's path).
+    pub fn connect_raw(
+        &self,
+        proto: ProtocolId,
+        flags: u32,
+        baud: u32,
+    ) -> Result<crate::session::RawChannel, Error> {
+        crate::session::RawChannel::connect(self.clone(), proto, flags, baud)
+    }
+
     /// CMD 0x03 — the firmware identity string, `"J2534 MINIV1.03"` on the
     /// stock cable.
     pub fn firmware_version(&self) -> Result<String, Error> {

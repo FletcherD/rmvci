@@ -137,6 +137,28 @@ impl DeviceStatus {
     pub fn is_ok(self) -> bool {
         self == Self::NoError
     }
+
+    /// The raw wire byte — also a valid J2534 error code, which is what the
+    /// PassThru shim reports it as.
+    pub fn code(self) -> u8 {
+        match self {
+            Self::NoError => 0x00,
+            Self::NotSupported => 0x01,
+            Self::InvalidChannelId => 0x02,
+            Self::NullParameter => 0x04,
+            Self::Failed => 0x07,
+            Self::DeviceNotConnected => 0x08,
+            Self::Timeout => 0x09,
+            Self::InvalidMsg => 0x0a,
+            Self::InvalidMsgId => 0x0d,
+            Self::BufferEmpty => 0x10,
+            Self::BufferFull => 0x11,
+            Self::ChannelInUse => 0x14,
+            Self::InvalidFilterId => 0x16,
+            Self::InvalidDeviceId => 0x1a,
+            Self::Unknown(v) => v,
+        }
+    }
 }
 
 bitflags::bitflags! {

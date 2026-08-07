@@ -18,5 +18,9 @@ pub mod transport;
 pub mod types;
 
 pub use error::{CodecError, Error, InvalidProtocolId, IsoTpError, TransportError};
-pub use session::{Device, DeviceConfig, resolve_port};
+pub use session::protocol::{
+    Can, CanConfig, CanFilter, CanId, FlowControlFilter, Iso14230, Iso15765, Iso9141,
+    KLineConfig, KLineFilter, Protocol,
+};
+pub use session::{Channel, Device, DeviceConfig, RawChannel, resolve_port};
 pub use types::{Cmd, DeviceStatus, FilterType, ProtocolId, RxMsg, RxStatus, TxFlags};
