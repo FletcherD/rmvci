@@ -16,23 +16,28 @@ pub struct DeviceConfig {
     /// Serial port path; `None` falls back to `$MVCI_PORT`, then
     /// `/dev/ttyUSB0`.
     pub port: Option<String>,
-    /// How long the wire may sit idle before the actor pokes the adapter.
-    /// Every real transaction postpones it.
+    /// Optional idle poll: if set, the actor sends a READ_MSG when the wire
+    /// has been quiet this long. Every real transaction postpones it.
     ///
-    /// The C driver polled every 15 ms on the premise that the adapter
-    /// resets if left alone. Measured on the real cable
-    /// (`live_keepalive_threshold`), a session survives **at least 5 minutes**
-    /// of silence — with a channel connected and without — so that premise
-    /// does not hold at any timescale a driver cares about, and the poll is
-    /// really serving liveness detection and background RX draining.
-    /// 5 s keeps both responsive with a ~60x margin under what was measured.
-    pub keepalive: Duration,
+    /// **Default: `None` — the adapter does not need it.** libMVCI polls
+    /// every 15 ms on the premise that "the adapter resets if left idle".
+    /// Measured on the cable (`live_idle_decay_characterisation`), after
+    /// **15 minutes** of complete silence the DES session, the connected
+    /// channel, its acceptance filter and a full request/response exchange
+    /// all still work. The premise is simply not true, so rMVCI sends
+    /// nothing when it has nothing to say.
+    ///
+    /// Set it if you want the RX ring drained in the background during long
+    /// quiet periods, or a faster wedge verdict. Note this is **not** an ECU
+    /// tester-present: a K-line ISO14230 session has its own P3 timeout at
+    /// the *ECU*, which the application must service itself.
+    pub keepalive: Option<Duration>,
     pub clock: Arc<dyn Clock>,
 }
 
 impl Default for DeviceConfig {
     fn default() -> Self {
-        Self { port: None, keepalive: Duration::from_secs(5), clock: Arc::new(RealClock) }
+        Self { port: None, keepalive: None, clock: Arc::new(RealClock) }
     }
 }
 

@@ -38,10 +38,15 @@ fn ka_ack() -> Vec<u8> {
     frame::encode_encrypted(&KEY_OLD, &[0x02, 0x00, 0x09, 0x10]).unwrap()
 }
 
+/// The shipped default: no idle poll at all.
+fn no_keepalive() -> DeviceConfig {
+    DeviceConfig { port: None, keepalive: None, clock: Arc::new(MockClock::default()) }
+}
+
 fn cfg(keepalive_ms: u64) -> DeviceConfig {
     DeviceConfig {
         port: None,
-        keepalive: Duration::from_millis(keepalive_ms),
+        keepalive: Some(Duration::from_millis(keepalive_ms)),
         clock: Arc::new(MockClock::default()),
     }
 }
@@ -114,17 +119,71 @@ fn keepalive_fires_when_idle_with_exact_bytes() {
 }
 
 #[test]
-fn silent_adapter_is_declared_wedged_and_fails_fast() {
+fn silent_adapter_is_declared_wedged_via_idle_poll() {
     // Handshake succeeds, then the adapter never answers again.
     let dev = Device::open_transport(MockTransport::new(handshake_steps()), cfg(15)).expect("open");
 
-    // Three failed keepalives are needed; give them time to happen.
+    // Three silent idle polls are needed; give them time to happen.
     std::thread::sleep(Duration::from_millis(200));
 
     match dev.firmware_version() {
         Err(Error::Wedged(n)) => assert!(n >= 3, "wedge counter should be >= 3, got {n}"),
         other => panic!("expected Error::Wedged, got {other:?}"),
     }
+}
+
+/// With no idle poll configured — the default — a wedged adapter must still
+/// be detected, from the silence of the caller's own requests. This is the
+/// path that matters: it costs nothing while idle and reacts exactly when
+/// the device is being used.
+#[test]
+fn silent_adapter_is_declared_wedged_from_real_requests() {
+    let dev = Device::open_transport(MockTransport::new(handshake_steps()), no_keepalive())
+        .expect("open");
+
+    // No poll is running, so nothing has happened yet: the first requests
+    // time out individually...
+    for i in 1..=3 {
+        match dev.firmware_version() {
+            Err(Error::Timeout(_)) => {}
+            other => panic!("request {i} should time out, got {other:?}"),
+        }
+    }
+    // ...and after the threshold the device fails fast instead.
+    match dev.firmware_version() {
+        Err(Error::Wedged(n)) => assert!(n >= 3, "wedge counter should be >= 3, got {n}"),
+        other => panic!("expected Error::Wedged, got {other:?}"),
+    }
+}
+
+/// A rejection is not silence: the adapter answering "no" proves it is alive,
+/// so it must not count toward the wedge threshold.
+#[test]
+fn rejections_do_not_count_as_wedge() {
+    let mut steps = handshake_steps();
+    // Five ERR_NOT_SUPPORTED replies to READ_VERSION, then a real one.
+    for _ in 0..5 {
+        steps.push(Step::reply_any(
+            frame::encode_encrypted(&KEY_OLD, &[0x02, 0x00, 0x03, 0x01]).unwrap(),
+        ));
+    }
+    let version_inner = {
+        let s = b"J2534 MINIV1.03";
+        let mut v = Vec::new();
+        v.extend_from_slice(&((1 + s.len()) as u16).to_le_bytes());
+        v.push(0x03);
+        v.extend_from_slice(s);
+        v
+    };
+    steps.push(Step::reply_any(frame::encode_encrypted(&KEY_OLD, &version_inner).unwrap()));
+
+    let dev = Device::open_transport(MockTransport::new(steps), no_keepalive()).expect("open");
+    for _ in 0..5 {
+        // Malformed-for-this-command replies surface as codec errors, not
+        // as Wedged — the point is only that they never wedge the device.
+        assert!(!matches!(dev.firmware_version(), Err(Error::Wedged(_))));
+    }
+    assert_eq!(dev.firmware_version().unwrap(), "J2534 MINIV1.03");
 }
 
 #[test]

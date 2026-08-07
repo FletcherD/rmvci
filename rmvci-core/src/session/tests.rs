@@ -34,7 +34,7 @@ fn status_reply(cmd: u8, status: u8) -> Vec<u8> {
 fn cfg(keepalive_ms: u64) -> DeviceConfig {
     DeviceConfig {
         port: None,
-        keepalive: Duration::from_millis(keepalive_ms),
+        keepalive: Some(Duration::from_millis(keepalive_ms)),
         clock: Arc::new(MockClock::default()),
     }
 }

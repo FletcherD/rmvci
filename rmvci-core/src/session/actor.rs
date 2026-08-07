@@ -83,7 +83,7 @@ pub(crate) fn spawn<T: Transport>(mut io: T, cfg: Arc<DeviceConfig>) -> Result<O
                 rx,
                 queues: HashMap::new(),
                 connected: Vec::new(),
-                ka_failures: 0,
+                silent_exchanges: 0,
                 wedged: false,
                 last_wire: Instant::now(),
             }
@@ -126,11 +126,15 @@ struct Actor<T: Transport> {
     link: KeyedLink,
     cfg: Arc<DeviceConfig>,
     rx: mpsc::Receiver<Request>,
-    /// Messages drained by the keepalive, waiting for a Poll.
+    /// Messages the optional idle poll drained, waiting for a `Poll`.
     queues: HashMap<ProtocolId, VecDeque<RxMsg>>,
-    /// Connected channels, kept sorted; drives keepalive proto and teardown.
+    /// Connected channels, kept sorted; drives the poll's proto and teardown.
     connected: Vec<ProtocolId>,
-    ka_failures: u8,
+    /// Consecutive exchanges that got no reply. Counted from *real* requests
+    /// as well as idle polls, so a wedged adapter is detected while it is
+    /// being used — which is the only time it matters — without any idle
+    /// traffic. Reset by any successful exchange.
+    silent_exchanges: u8,
     wedged: bool,
     last_wire: Instant,
 }
@@ -138,11 +142,17 @@ struct Actor<T: Transport> {
 impl<T: Transport> Actor<T> {
     fn run(mut self) {
         loop {
-            let deadline = self.last_wire + self.cfg.keepalive;
-            let wait = deadline.saturating_duration_since(Instant::now());
-            match self.rx.recv_timeout(wait) {
+            // With no idle poll configured, block until a request arrives.
+            let outcome = match self.cfg.keepalive {
+                Some(interval) => {
+                    let deadline = self.last_wire + interval;
+                    self.rx.recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                }
+                None => self.rx.recv().map_err(|_| mpsc::RecvTimeoutError::Disconnected),
+            };
+            match outcome {
                 Ok(req) => self.handle(req),
-                Err(mpsc::RecvTimeoutError::Timeout) => self.keepalive(),
+                Err(mpsc::RecvTimeoutError::Timeout) => self.idle_poll(),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.teardown();
                     return;
@@ -153,7 +163,7 @@ impl<T: Transport> Actor<T> {
 
     fn handle(&mut self, req: Request) {
         if self.wedged {
-            let err = || Error::Wedged(self.ka_failures);
+            let err = || Error::Wedged(self.silent_exchanges);
             match req {
                 Request::Transact { reply, .. } => drop(reply.send(Err(err()))),
                 Request::Connect { reply, .. } => drop(reply.send(Err(err()))),
@@ -183,6 +193,17 @@ impl<T: Transport> Actor<T> {
     }
 
     fn transact(&mut self, inner_bytes: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
+        let r = self.transact_inner(inner_bytes, timeout);
+        // Silence is what a wedged adapter looks like. A rejection or a
+        // corrupt frame means it is talking, so those do not count.
+        match &r {
+            Err(Error::Timeout(_)) => self.note_silence(),
+            _ => self.silent_exchanges = 0,
+        }
+        r
+    }
+
+    fn transact_inner(&mut self, inner_bytes: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         let wire_frame = frame::encode_encrypted(self.link.key(), inner_bytes)?;
         tracing::trace!(tx = %hex(inner_bytes), "transact");
         self.io.purge_rx()?;
@@ -193,6 +214,18 @@ impl<T: Transport> Actor<T> {
         let resp = frame::decode_encrypted(self.link.key(), &raw)?;
         tracing::trace!(rx = %hex(&resp), "reply");
         Ok(resp)
+    }
+
+    fn note_silence(&mut self) {
+        self.silent_exchanges = self.silent_exchanges.saturating_add(1);
+        tracing::warn!(consecutive = self.silent_exchanges, "no reply from the adapter");
+        if self.silent_exchanges >= WEDGE_THRESHOLD {
+            self.wedged = true;
+            tracing::error!(
+                "adapter unresponsive; declared wedged — reopen the device to \
+                 DTR/RTS-reset it"
+            );
+        }
     }
 
     fn transact_status(
@@ -244,23 +277,21 @@ impl<T: Transport> Actor<T> {
         }
     }
 
-    /// Idle-triggered poll: fires when nothing else has touched the wire for
-    /// the configured interval. It detects a wedged adapter and drains the
-    /// RX ring in the background — the "adapter resets if left idle" premise
-    /// the C driver's 15 ms hot loop was built on did not survive
-    /// measurement (see `DeviceConfig::keepalive`).
+    /// Optional idle poll (off by default — the adapter does not need one;
+    /// see `DeviceConfig::keepalive`). Its only jobs are draining the RX ring
+    /// during long quiet periods and reaching a wedge verdict sooner.
     ///
     /// The reply is parsed, so a real message the poll happened to drain is
     /// queued rather than discarded as the C keepalive did.
-    fn keepalive(&mut self) {
+    fn idle_poll(&mut self) {
         if self.wedged {
             self.last_wire = Instant::now();
             return;
         }
         let proto = self.connected.first().copied().unwrap_or(ProtocolId::Iso15765);
+        // transact() does the wedge accounting for us.
         match self.transact(&inner::read_poll(proto), Duration::from_millis(500)) {
             Ok(resp) => {
-                self.ka_failures = 0;
                 if let Ok(parsed) = inner::parse_read_reply(&resp)
                     && !parsed.msg.is_empty()
                 {
@@ -270,18 +301,7 @@ impl<T: Transport> Actor<T> {
                     });
                 }
             }
-            Err(e) => {
-                self.ka_failures += 1;
-                tracing::warn!(failures = self.ka_failures, error = %e, "keepalive failed");
-                if self.ka_failures >= WEDGE_THRESHOLD {
-                    self.wedged = true;
-                    tracing::error!(
-                        "adapter unresponsive; declared wedged — reopen the device to \
-                         DTR/RTS-reset it"
-                    );
-                }
-                self.last_wire = Instant::now();
-            }
+            Err(_) => self.last_wire = Instant::now(),
         }
     }
 

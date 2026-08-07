@@ -70,8 +70,8 @@ error messages:
 | | `FirmwareIsoTp` (protocol 6) | `IsoTp` (protocol 5, host-side) |
 |---|---|---|
 | Transmit > 255 bytes | **broken** (FF_DL truncated to 8 bits) — refused with `FirmwareFfDlLimit` | full 12-bit FF_DL, to 4095 |
-| Flow-control block size | ignored (waits for FC once, then floods) | honored |
-| STmin | ignored (fixed ~1 ms) | honored, incl. the 0xF1–0xF9 sub-ms range |
+| Flow-control block size | ignored — **measured**: sent 7 when granted 2 | honored — **measured**: paused at exactly 2 |
+| STmin | ignored — **measured**: ~0 ms gaps when asked for 50 | honored — **measured**: 50.0 ms; incl. the 0xF1–0xF9 sub-ms range |
 | `FS=WAIT` / `FS=OVFLW` | treated as CTS | honored / reported |
 | Receive reassembly | correct FF_DL handling, but into a **single global scratch buffer shared by every protocol object, appended with no bounds check** — a response beyond ~1500 bytes corrupts adapter RAM | on the host, bounded by `Vec` |
 | CF sequence error on receive | dropped silently, no notification | `SequenceError { expected, got }` |
@@ -91,17 +91,52 @@ independently measured — treat it as an order of magnitude, not a threshold.)
 
 ## Measured on the real cable
 
-Two things the C driver assumed turned out not to hold, so rMVCI does
-something different:
+### There is no keepalive, because the adapter does not need one
 
-- **The adapter does not need constant poking.** libMVCI polls it every 15 ms
-  because "the adapter resets if left idle". A session here survives **at
-  least 5 minutes** of complete silence, with a channel connected and without
-  (`live_keepalive_threshold`). The idle poll is kept for liveness detection
-  and background RX draining, at a 5 s default instead of 15 ms.
-- **A keepalive reply can carry real data.** The C keepalive discarded its
-  reply wholesale, so any message it happened to drain was lost. Here the
-  reply is parsed and queued for the next `read`.
+libMVCI polls the cable every 15 ms on the premise that "the adapter resets if
+left idle". That premise does not survive measurement.
+`live_idle_decay_characterisation` idles the link and then probes upward —
+session, then channel, then a full request/response exchange — so it can tell
+"still alive" from "alive but the channel was silently dropped", which a
+device-level query alone cannot:
+
+| idle | session | channel | exchange |
+|---|---|---|---|
+| 5 s | ok | ok | ok |
+| 30 s | ok | ok | ok |
+| 60 s | ok | ok | ok |
+| 300 s | ok | ok | ok |
+| **900 s** | **ok** | **ok** | **ok** |
+
+After 15 minutes of complete silence the DES session, the connected channel,
+its acceptance filter and a real `21 43` exchange all still work. So
+`DeviceConfig::keepalive` defaults to `None` and rMVCI sends nothing when it
+has nothing to say.
+
+Wedge detection does not depend on it: the actor counts consecutive
+*unanswered exchanges* from real requests, so a dead adapter is caught while
+you are actually using it, at zero idle cost. A rejection doesn't count — an
+adapter saying "no" is an adapter that is alive.
+
+Set `keepalive: Some(..)` if you want the RX ring drained during long quiet
+periods. Note it is **not** an ECU tester-present: a K-line ISO14230 session
+has its own P3 timeout at the *ECU*, which your application must service.
+
+### The firmware's ISO-TP transmit really does ignore flow control
+
+`re/FINDINGS.md` §10.3 derived this from firmware disassembly but had never
+tested it against a peer that stresses it. `re/bench/isotp_fc_probe.py` does:
+it answers a First Frame with `FC BS=2 STmin=50ms` and measures what comes
+back. Sending the same 60-byte payload down each path:
+
+| | frames before pausing (asked 2) | inter-frame gap (asked 50 ms) |
+|---|---|---|
+| `FirmwareIsoTp` (protocol 6) | **7** — ignored | **~0 ms** — ignored |
+| `IsoTp` (host, protocol 5) | **2** — honored | **50.0 ms** — honored |
+
+That is the concrete reason the host path exists, now measured rather than
+inferred. Against an ECU that means what it says with `BS`, the firmware path
+will overrun it.
 
 ## Debugging
 

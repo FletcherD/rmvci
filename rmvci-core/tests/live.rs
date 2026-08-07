@@ -158,11 +158,11 @@ fn live_can_firmware_vs_host() {
 /// while still answering device commands cheerfully. So after each idle gap
 /// the probe walks up the stack and reports the *first* layer that fails:
 ///
-///   1. session   — READ_VERSION (CMD 0x03), device-level
-///   2. channel   — a READ_MSG poll on the connected channel; the firmware
-///                  answers ERR_INVALID_CHANNEL_ID if the channel is gone
-///   3. exchange  — a real 21 43 to the bench ECU, which additionally needs
-///                  the acceptance filter and the CAN bus timing to be intact
+/// 1. session — READ_VERSION (CMD 0x03), device-level.
+/// 2. channel — a READ_MSG poll on the connected channel; the firmware answers
+///    ERR_INVALID_CHANNEL_ID if the channel is gone.
+/// 3. exchange — a real 21 43 to the bench ECU, which additionally needs the
+///    acceptance filter and the CAN bus timing to be intact.
 ///
 /// If stage 3 fails it then tries to recover, which says what a driver would
 /// have to *do* about it: reinstall the filter, or reconnect the channel.
@@ -183,7 +183,7 @@ fn live_idle_decay_characterisation() {
     let open = || {
         Device::open_with(DeviceConfig {
             port: Some(port()),
-            keepalive: Duration::from_secs(7200),
+            keepalive: Some(Duration::from_secs(7200)),
             clock: Arc::new(rmvci_core::transport::RealClock),
         })
         .expect("open")
@@ -250,9 +250,8 @@ fn live_idle_decay_characterisation() {
                     let mut fresh =
                         dev.connect::<Iso15765>(CanConfig::default()).expect("reconnect");
                     fresh.set_filter(FlowControlFilter::exact(rx, tx)).expect("filter");
-                    let reconnected = fresh
-                        .send(tx, &[0x21, 0x43])
-                        .and_then(|()| fresh.read(probe_timeout));
+                    let reconnected =
+                        fresh.send(tx, &[0x21, 0x43]).and_then(|()| fresh.read(probe_timeout));
                     println!(
                         "           --> filter reinstall did NOT help; reconnect {}",
                         if reconnected.is_ok() { "RECOVERED" } else { "also failed" }
@@ -324,10 +323,13 @@ fn live_fc_host_path() {
     send_multiframe_for_probe(true);
 }
 
-/// M2 smoke: open + handshake, identity, and 60 s of keepalive survival.
+/// Smoke test: open + handshake + identity, then hold the link idle for 60 s
+/// with the shipped defaults — which send **no keepalive at all** — and query
+/// again. A regression that reintroduced an idle-reset assumption, or a
+/// device that really did need poking, would fail the second query.
 #[test]
 #[ignore = "needs the Mini-VCI cable (set RMVCI_PORT)"]
-fn smoke_open_version_keepalive() {
+fn smoke_open_version_survives_idle() {
     let dev = Device::open(port()).expect("open + handshake");
     println!("DES key: {:02x?}", dev.des_key());
 
@@ -335,11 +337,9 @@ fn smoke_open_version_keepalive() {
     println!("firmware: {version:?}");
     assert_eq!(version, "J2534 MINIV1.03");
 
-    // The adapter resets if left idle; the actor's keepalive must hold the
-    // session. If it doesn't, this second query fails.
-    println!("holding idle for 60 s...");
+    println!("holding idle for 60 s with no keepalive traffic...");
     std::thread::sleep(Duration::from_secs(60));
     let again = dev.firmware_version().expect("firmware version after idle hold");
     assert_eq!(again, version);
-    println!("keepalive held");
+    println!("survived 60 s of silence");
 }

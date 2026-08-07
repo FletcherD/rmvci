@@ -129,7 +129,7 @@ fn shim_end_to_end() {
             MockTransport::new(steps),
             DeviceConfig {
                 port: None,
-                keepalive: Duration::from_secs(600),
+                keepalive: Some(Duration::from_secs(600)),
                 clock: Arc::new(MockClock::default()),
             },
         )
