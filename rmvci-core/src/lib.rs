@@ -13,7 +13,10 @@
 
 pub mod codec;
 pub mod error;
+pub mod session;
+pub mod transport;
 pub mod types;
 
 pub use error::{CodecError, Error, InvalidProtocolId, IsoTpError, TransportError};
-pub use types::{Cmd, DeviceStatus, FilterType, ProtocolId, RxStatus, TxFlags};
+pub use session::{Device, DeviceConfig, resolve_port};
+pub use types::{Cmd, DeviceStatus, FilterType, ProtocolId, RxMsg, RxStatus, TxFlags};

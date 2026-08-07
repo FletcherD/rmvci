@@ -7,18 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["serial", "tracing"]
+default = ["serial"]
 # serialport's default features pull in libudev for enumeration; we only ever
 # open by explicit path, so leave them off.
 serial = ["dep:serialport"]
-tracing = ["dep:tracing"]
 
 [dependencies]
 des = "0.8"
 thiserror = "2"
 bitflags = "2"
 serialport = { version = "4", default-features = false, optional = true }
-tracing = { version = "0.1", optional = true }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 proptest = "1"

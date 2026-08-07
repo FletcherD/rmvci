@@ -1,0 +1,285 @@
+//! The port-owning actor: one thread owns the transport, the DES key, the
+//! keepalive timer and the per-protocol receive queues; callers send a
+//! request and block on a oneshot reply. The C driver used a keepalive
+//! thread plus a non-recursive mutex, which deadlocked whenever a lock
+//! holder called back into the public API — here that hazard cannot exist.
+
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
+
+use crate::codec::{frame, inner};
+use crate::error::Error;
+use crate::session::device::DeviceConfig;
+use crate::session::link::KeyedLink;
+use crate::session::wire;
+use crate::transport::{LatencyResult, Transport};
+use crate::types::{Cmd, ProtocolId, RxMsg};
+
+/// Consecutive keepalive failures after which the adapter is declared wedged
+/// and requests fail fast instead of each eating a full timeout.
+const WEDGE_THRESHOLD: u8 = 3;
+
+pub(crate) enum Request {
+    /// Encrypt an inner command, send it, return the decrypted reply inner.
+    Transact { inner: Vec<u8>, timeout: Duration, reply: mpsc::Sender<Result<Vec<u8>, Error>> },
+    /// CONNECT with the C driver's recovery: after a prior Disconnect the
+    /// adapter ignores Connect until it is reset, so on rejection re-run the
+    /// handshake and retry once (serial.c:427).
+    Connect {
+        proto: ProtocolId,
+        flags: u32,
+        baud: u32,
+        reply: mpsc::Sender<Result<(), Error>>,
+    },
+    Disconnect { proto: ProtocolId, reply: mpsc::Sender<Result<(), Error>> },
+    /// One READ_MSG poll, draining the actor-side queue first.
+    Poll {
+        proto: ProtocolId,
+        timeout: Duration,
+        reply: mpsc::Sender<Result<Option<RxMsg>, Error>>,
+    },
+}
+
+/// Run the open sequence on a fresh thread and hand back the request sender
+/// plus the session key. Blocks until the handshake finishes.
+pub(crate) fn spawn<T: Transport>(
+    mut io: T,
+    cfg: Arc<DeviceConfig>,
+) -> Result<(mpsc::Sender<Request>, [u8; 8]), Error> {
+    let (tx, rx) = mpsc::channel::<Request>();
+    let (open_tx, open_rx) = mpsc::channel::<Result<[u8; 8], Error>>();
+
+    std::thread::Builder::new()
+        .name("rmvci-actor".into())
+        .spawn(move || {
+            let opened = open(&mut io, &cfg);
+            let link = match opened {
+                Ok(link) => {
+                    let _ = open_tx.send(Ok(*link.key()));
+                    link
+                }
+                Err(e) => {
+                    let _ = open_tx.send(Err(e));
+                    return;
+                }
+            };
+            Actor {
+                io,
+                link,
+                cfg,
+                rx,
+                queues: HashMap::new(),
+                connected: Vec::new(),
+                ka_failures: 0,
+                wedged: false,
+                last_wire: Instant::now(),
+            }
+            .run();
+        })
+        .map_err(|e| Error::Transport(e.into()))?;
+
+    open_rx.recv().map_err(|_| Error::Closed)?.map(|key| (tx, key))
+}
+
+/// DTR/RTS reset dance (io.c:187-197) + latency fix + handshake. The dance is
+/// what recovers a wedged MCU; do not shorten the waits.
+fn open<T: Transport>(io: &mut T, cfg: &DeviceConfig) -> Result<KeyedLink, Error> {
+    io.set_modem(true, false)?; // RTS clear, DTR set
+    cfg.clock.sleep(Duration::from_millis(15));
+    io.set_modem(false, false)?; // DTR clear -> MCU resets
+    cfg.clock.sleep(Duration::from_millis(1000)); // boot
+    io.purge_rx()?;
+
+    match io.optimize_latency() {
+        LatencyResult::Set { millis } => tracing::info!(millis, "FTDI latency timer set"),
+        LatencyResult::AlreadyLow { millis } => tracing::debug!(millis, "FTDI latency timer already low"),
+        LatencyResult::Failed { reason } => tracing::warn!(
+            %reason,
+            "FTDI latency timer left at its default; every exchange pays up to 16 ms extra"
+        ),
+        LatencyResult::Unavailable => {}
+    }
+
+    KeyedLink::establish(io, &*cfg.clock)
+}
+
+struct Actor<T: Transport> {
+    io: T,
+    link: KeyedLink,
+    cfg: Arc<DeviceConfig>,
+    rx: mpsc::Receiver<Request>,
+    /// Messages drained by the keepalive, waiting for a Poll.
+    queues: HashMap<ProtocolId, VecDeque<RxMsg>>,
+    /// Connected channels, kept sorted; drives keepalive proto and teardown.
+    connected: Vec<ProtocolId>,
+    ka_failures: u8,
+    wedged: bool,
+    last_wire: Instant,
+}
+
+impl<T: Transport> Actor<T> {
+    fn run(mut self) {
+        loop {
+            let deadline = self.last_wire + self.cfg.keepalive;
+            let wait = deadline.saturating_duration_since(Instant::now());
+            match self.rx.recv_timeout(wait) {
+                Ok(req) => self.handle(req),
+                Err(mpsc::RecvTimeoutError::Timeout) => self.keepalive(),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.teardown();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn handle(&mut self, req: Request) {
+        if self.wedged {
+            let err = || Error::Wedged(self.ka_failures);
+            match req {
+                Request::Transact { reply, .. } => drop(reply.send(Err(err()))),
+                Request::Connect { reply, .. } => drop(reply.send(Err(err()))),
+                Request::Disconnect { reply, .. } => drop(reply.send(Err(err()))),
+                Request::Poll { reply, .. } => drop(reply.send(Err(err()))),
+            }
+            return;
+        }
+        match req {
+            Request::Transact { inner, timeout, reply } => {
+                let r = self.transact(&inner, timeout);
+                let _ = reply.send(r);
+            }
+            Request::Connect { proto, flags, baud, reply } => {
+                let r = self.connect(proto, flags, baud);
+                let _ = reply.send(r);
+            }
+            Request::Disconnect { proto, reply } => {
+                let r = self.disconnect(proto);
+                let _ = reply.send(r);
+            }
+            Request::Poll { proto, timeout, reply } => {
+                let r = self.poll(proto, timeout);
+                let _ = reply.send(r);
+            }
+        }
+    }
+
+    fn transact(&mut self, inner_bytes: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
+        let wire_frame = frame::encode_encrypted(self.link.key(), inner_bytes)?;
+        tracing::trace!(tx = %hex(inner_bytes), "transact");
+        self.io.purge_rx()?;
+        self.io.write_all(&wire_frame)?;
+        self.last_wire = Instant::now();
+        let raw = wire::read_frame(&mut self.io, timeout)?;
+        self.last_wire = Instant::now();
+        let resp = frame::decode_encrypted(self.link.key(), &raw)?;
+        tracing::trace!(rx = %hex(&resp), "reply");
+        Ok(resp)
+    }
+
+    fn transact_status(
+        &mut self,
+        inner_bytes: &[u8],
+        cmd: Cmd,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        let resp = self.transact(inner_bytes, timeout)?;
+        let status = inner::status_of(&resp, cmd)?;
+        if status.is_ok() { Ok(()) } else { Err(Error::Rejected { cmd, status }) }
+    }
+
+    fn connect(&mut self, proto: ProtocolId, flags: u32, baud: u32) -> Result<(), Error> {
+        let inner_bytes = inner::connect(proto, flags, baud);
+        let timeout = Duration::from_millis(2000);
+        if let Err(first) = self.transact_status(&inner_bytes, Cmd::Connect, timeout) {
+            tracing::debug!(error = %first, "connect rejected; re-running the handshake once");
+            self.link = KeyedLink::establish(&mut self.io, &*self.cfg.clock)?;
+            self.transact_status(&inner_bytes, Cmd::Connect, timeout)?;
+        }
+        if !self.connected.contains(&proto) {
+            self.connected.push(proto);
+            self.connected.sort_by_key(|p| p.wire());
+        }
+        Ok(())
+    }
+
+    fn disconnect(&mut self, proto: ProtocolId) -> Result<(), Error> {
+        let r = self.transact_status(
+            &inner::disconnect(proto),
+            Cmd::Disconnect,
+            Duration::from_millis(1000),
+        );
+        self.connected.retain(|p| *p != proto);
+        r
+    }
+
+    fn poll(&mut self, proto: ProtocolId, timeout: Duration) -> Result<Option<RxMsg>, Error> {
+        if let Some(m) = self.queues.get_mut(&proto).and_then(VecDeque::pop_front) {
+            return Ok(Some(m));
+        }
+        let resp = self.transact(&inner::read_poll(proto), timeout)?;
+        let parsed = inner::parse_read_reply(&resp)?;
+        if parsed.msg.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(RxMsg { rx_status: parsed.rx_status, data: parsed.msg.to_vec() }))
+        }
+    }
+
+    /// Idle-triggered keepalive: the adapter resets if left alone, so poll it
+    /// when nothing else has touched the wire for the configured interval.
+    /// Unlike the C driver's 15 ms hot loop, the reply is parsed — a real
+    /// message the keepalive happened to drain is queued, never discarded.
+    fn keepalive(&mut self) {
+        if self.wedged {
+            self.last_wire = Instant::now();
+            return;
+        }
+        let proto = self.connected.first().copied().unwrap_or(ProtocolId::Iso15765);
+        match self.transact(&inner::read_poll(proto), Duration::from_millis(500)) {
+            Ok(resp) => {
+                self.ka_failures = 0;
+                if let Ok(parsed) = inner::parse_read_reply(&resp)
+                    && !parsed.msg.is_empty()
+                {
+                    self.queues.entry(proto).or_default().push_back(RxMsg {
+                        rx_status: parsed.rx_status,
+                        data: parsed.msg.to_vec(),
+                    });
+                }
+            }
+            Err(e) => {
+                self.ka_failures += 1;
+                tracing::warn!(failures = self.ka_failures, error = %e, "keepalive failed");
+                if self.ka_failures >= WEDGE_THRESHOLD {
+                    self.wedged = true;
+                    tracing::error!(
+                        "adapter unresponsive; declared wedged — reopen the device to \
+                         DTR/RTS-reset it"
+                    );
+                }
+                self.last_wire = Instant::now();
+            }
+        }
+    }
+
+    /// All request senders dropped: disconnect every channel (0x08 each),
+    /// close the encrypted session (0x02), release the port.
+    fn teardown(&mut self) {
+        for proto in std::mem::take(&mut self.connected) {
+            let _ = self.transact_status(
+                &inner::disconnect(proto),
+                Cmd::Disconnect,
+                Duration::from_millis(500),
+            );
+        }
+        let _ = self.transact(&inner::session_close(), Duration::from_millis(500));
+        tracing::debug!("session closed");
+    }
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect::<Vec<_>>().join(" ")
+}

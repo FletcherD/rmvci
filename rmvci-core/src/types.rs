@@ -176,3 +176,19 @@ pub enum FilterType {
     Block = 2,
     FlowControl = 3,
 }
+
+/// One received message, as the adapter reported it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RxMsg {
+    pub rx_status: RxStatus,
+    /// For CAN/ISO15765: 4-byte big-endian CAN identifier, then the payload.
+    pub data: Vec<u8>,
+}
+
+impl RxMsg {
+    /// True for the adapter's transmit echo and the ISO15765 start-of-message
+    /// indication — frames that carry no payload data.
+    pub fn is_indication(&self) -> bool {
+        self.rx_status.contains(RxStatus::NOT_DATA)
+    }
+}
