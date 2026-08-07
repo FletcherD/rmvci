@@ -2,8 +2,8 @@
 //! boundary, which is what lets the J2534 shim store devices and channels in
 //! a C-style slot table and lets `Drop` do the wire teardown.
 
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::codec::inner;
@@ -39,10 +39,32 @@ pub fn resolve_port(explicit: Option<&str>) -> String {
         .unwrap_or_else(|| "/dev/ttyUSB0".to_string())
 }
 
+/// Set by the actor thread just before it releases the port, so
+/// [`Device::close`] can wait for the port to actually be free.
+#[derive(Default)]
+pub(crate) struct CloseSignal {
+    done: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl CloseSignal {
+    pub(crate) fn signal(&self) {
+        *self.done.lock().unwrap() = true;
+        self.cv.notify_all();
+    }
+
+    fn wait(&self, timeout: Duration) -> bool {
+        let done = self.done.lock().unwrap();
+        let (done, _) = self.cv.wait_timeout_while(done, timeout, |d| !*d).unwrap();
+        *done
+    }
+}
+
 #[derive(Clone)]
 pub struct Device {
     tx: mpsc::Sender<Request>,
     key: [u8; 8],
+    closed: Arc<CloseSignal>,
 }
 
 impl Device {
@@ -61,8 +83,21 @@ impl Device {
 
     /// Open over any transport (mock transports in tests).
     pub fn open_transport<T: Transport>(io: T, cfg: DeviceConfig) -> Result<Self, Error> {
-        let (tx, key) = actor::spawn(io, Arc::new(cfg))?;
-        Ok(Self { tx, key })
+        let (tx, key, closed) = actor::spawn(io, Arc::new(cfg))?;
+        Ok(Self { tx, key, closed })
+    }
+
+    /// Close the session and **wait for the port to be released**.
+    ///
+    /// Dropping a `Device` starts the teardown but returns immediately, so
+    /// an immediate reopen of the same port fails with "Device or resource
+    /// busy". Call this when you intend to reopen. Other clones of this
+    /// handle keep the session alive; the wait then times out and returns
+    /// `false`.
+    pub fn close(self) -> bool {
+        let closed = Arc::clone(&self.closed);
+        drop(self);
+        closed.wait(Duration::from_secs(5))
     }
 
     /// The DES session key from the opening handshake (diagnostics only; a

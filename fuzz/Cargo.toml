@@ -1,0 +1,40 @@
+[package]
+name = "rmvci-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+rmvci-core = { path = "../rmvci-core", default-features = false }
+
+[[bin]]
+name = "fuzz_deframe"
+path = "fuzz_targets/fuzz_deframe.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_decrypt"
+path = "fuzz_targets/fuzz_decrypt.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_inner_parse"
+path = "fuzz_targets/fuzz_inner_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_isotp_rx"
+path = "fuzz_targets/fuzz_isotp_rx.rs"
+test = false
+doc = false
+bench = false

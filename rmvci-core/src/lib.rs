@@ -13,11 +13,13 @@
 
 pub mod codec;
 pub mod error;
+pub mod isotp;
 pub mod session;
 pub mod transport;
 pub mod types;
 
 pub use error::{CodecError, Error, InvalidProtocolId, IsoTpError, TransportError};
+pub use isotp::{FirmwareIsoTp, IsoTp, IsoTpConfig, UdsTransport};
 pub use session::protocol::{
     Can, CanConfig, CanFilter, CanId, FlowControlFilter, Iso14230, Iso15765, Iso9141,
     KLineConfig, KLineFilter, Protocol,

@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use crate::codec::{frame, inner};
 use crate::error::Error;
-use crate::session::device::DeviceConfig;
+use crate::session::device::{CloseSignal, DeviceConfig};
 use crate::session::link::KeyedLink;
 use crate::session::wire;
 use crate::transport::{LatencyResult, Transport};
@@ -42,14 +42,17 @@ pub(crate) enum Request {
     },
 }
 
-/// Run the open sequence on a fresh thread and hand back the request sender
-/// plus the session key. Blocks until the handshake finishes.
-pub(crate) fn spawn<T: Transport>(
-    mut io: T,
-    cfg: Arc<DeviceConfig>,
-) -> Result<(mpsc::Sender<Request>, [u8; 8]), Error> {
+/// What a successful open hands back to `Device`.
+pub(crate) type Opened = (mpsc::Sender<Request>, [u8; 8], Arc<CloseSignal>);
+
+/// Run the open sequence on a fresh thread and hand back the request sender,
+/// the session key, and the close signal. Blocks until the handshake
+/// finishes.
+pub(crate) fn spawn<T: Transport>(mut io: T, cfg: Arc<DeviceConfig>) -> Result<Opened, Error> {
     let (tx, rx) = mpsc::channel::<Request>();
     let (open_tx, open_rx) = mpsc::channel::<Result<[u8; 8], Error>>();
+    let closed = Arc::new(CloseSignal::default());
+    let closed_in_thread = Arc::clone(&closed);
 
     std::thread::Builder::new()
         .name("rmvci-actor".into())
@@ -62,6 +65,7 @@ pub(crate) fn spawn<T: Transport>(
                 }
                 Err(e) => {
                     let _ = open_tx.send(Err(e));
+                    closed_in_thread.signal();
                     return;
                 }
             };
@@ -77,10 +81,13 @@ pub(crate) fn spawn<T: Transport>(
                 last_wire: Instant::now(),
             }
             .run();
+            // The transport (and with it the port) is dropped as the Actor
+            // goes out of scope; signal only after that.
+            closed_in_thread.signal();
         })
         .map_err(|e| Error::Transport(e.into()))?;
 
-    open_rx.recv().map_err(|_| Error::Closed)?.map(|key| (tx, key))
+    open_rx.recv().map_err(|_| Error::Closed)?.map(|key| (tx, key, closed))
 }
 
 /// DTR/RTS reset dance (io.c:187-197) + latency fix + handshake. The dance is

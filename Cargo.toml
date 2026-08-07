@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["rmvci-core", "rmvci-j2534", "examples/prius-hvac"]
+# cargo-fuzz builds its own crate with nightly + sanitizers; keeping it out
+# of the workspace stops it from pinning the stable build's dependencies.
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
