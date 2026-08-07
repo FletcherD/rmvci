@@ -88,6 +88,12 @@ impl IsoTp {
     }
 
     /// Frames from the response identifier, indications skipped.
+    ///
+    /// One poll yields at most one message — READ_MSG returns a single
+    /// queued message per call — so a burst of consecutive frames is drained
+    /// one at a time out of the adapter's ~1500-byte ring. That is why
+    /// `rx_bs` exists: on a very long response, advertise a block size
+    /// rather than let the ECU outrun the drain.
     fn poll_frame(&mut self, budget: Duration) -> Result<Option<RxMsg>, Error> {
         match self.chan.poll(budget)? {
             Some(m)
@@ -148,6 +154,12 @@ impl IsoTp {
         }
     }
 
+    /// Send then receive.
+    ///
+    /// Note `send` may consume frames from the response identifier while
+    /// waiting for flow control, and discards any that are not flow control.
+    /// That only matters if an ECU starts answering before it has received
+    /// the whole multi-frame request, which ISO 15765-2 does not allow.
     pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         self.send(req)?;
         self.recv(timeout)

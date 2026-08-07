@@ -19,7 +19,7 @@ hardware.
 
 ```sh
 cargo build --workspace
-cargo test --workspace          # 45 offline tests, no hardware needed
+cargo test --workspace          # 54 offline tests, no hardware needed
 
 # Read the Prius A/C amplifier air-mix servo (7C4, KWP 21 43):
 cargo run -p prius-hvac -- /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
