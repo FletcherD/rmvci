@@ -142,39 +142,65 @@ fn live_can_firmware_vs_host() {
     println!("both paths byte-identical");
 }
 
-/// M4: measure the adapter's real idle watchdog threshold. The C driver
-/// assumed 15 ms; the actor defaults to 100 ms. This sweep finds where the
-/// session actually dies so the default can be set to ~1/4 of it.
+/// Measure the adapter's real idle tolerance, with and without a connected
+/// channel. The C driver polled every 15 ms on the premise that "the adapter
+/// resets if left idle"; this is what decides the actor's default.
+///
+/// Run it as two cases because a bare DES session and a connected CAN
+/// channel are different states — a watchdog could plausibly apply to one and
+/// not the other.
 #[test]
-#[ignore = "needs the Mini-VCI cable (set RMVCI_PORT); takes minutes"]
+#[ignore = "needs the Mini-VCI cable (set RMVCI_PORT); takes ~20 minutes"]
 fn live_keepalive_threshold() {
-    use rmvci_core::DeviceConfig;
+    use rmvci_core::{CanConfig, DeviceConfig, Iso15765};
     use std::sync::Arc;
 
-    for gap_ms in [200u64, 500, 1000, 2000, 5000, 10_000, 20_000, 60_000, 120_000, 300_000] {
-        // Keepalive far beyond the gap so the actor stays silent during it.
-        let dev = Device::open_with(DeviceConfig {
+    // Keepalive far beyond every gap so the actor stays silent during them.
+    let open = || {
+        Device::open_with(DeviceConfig {
             port: Some(port()),
-            keepalive: Duration::from_secs(3600),
+            keepalive: Duration::from_secs(7200),
             clock: Arc::new(rmvci_core::transport::RealClock),
         })
-        .expect("open");
+        .expect("open")
+    };
 
-        let _ = dev.firmware_version().expect("baseline query");
+    let gaps = [1_000u64, 5_000, 20_000, 60_000, 120_000, 300_000];
 
-        std::thread::sleep(Duration::from_millis(gap_ms));
-        let outcome = dev.firmware_version();
-        dev.close(); // release the port before the next iteration reopens it
-        match outcome {
-            Ok(_) => println!("idle {gap_ms:>6} ms: survived"),
-            Err(e) => {
-                println!("idle {gap_ms:>6} ms: DEAD ({e})");
-                println!("--> watchdog threshold is between the last two gaps");
-                return;
+    for connected in [false, true] {
+        println!(
+            "\n--- idle tolerance, channel {} ---",
+            if connected { "CONNECTED (ISO15765)" } else { "not connected" }
+        );
+        let mut survived_all = true;
+        for gap_ms in gaps {
+            let dev = open();
+            let chan = connected
+                .then(|| dev.connect::<Iso15765>(CanConfig::default()).expect("connect"));
+            dev.firmware_version().expect("baseline query");
+
+            std::thread::sleep(Duration::from_millis(gap_ms));
+            let outcome = dev.firmware_version();
+            drop(chan);
+            dev.close(); // release the port before the next iteration reopens it
+
+            match outcome {
+                Ok(_) => println!("  idle {gap_ms:>7} ms: survived"),
+                Err(e) => {
+                    println!("  idle {gap_ms:>7} ms: DEAD ({e})");
+                    println!("  --> tolerance is between this gap and the previous one");
+                    survived_all = false;
+                    break;
+                }
             }
         }
+        if survived_all {
+            println!(
+                "  survived every gap up to {} s",
+                gaps.last().unwrap() / 1000
+            );
+        }
     }
-    println!("adapter survived 20 s idle — watchdog is longer than every gap tested");
 }
 
 /// M2 smoke: open + handshake, identity, and 60 s of keepalive survival.
