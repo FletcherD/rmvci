@@ -244,10 +244,14 @@ impl<T: Transport> Actor<T> {
         }
     }
 
-    /// Idle-triggered keepalive: the adapter resets if left alone, so poll it
-    /// when nothing else has touched the wire for the configured interval.
-    /// Unlike the C driver's 15 ms hot loop, the reply is parsed — a real
-    /// message the keepalive happened to drain is queued, never discarded.
+    /// Idle-triggered poll: fires when nothing else has touched the wire for
+    /// the configured interval. It detects a wedged adapter and drains the
+    /// RX ring in the background — the "adapter resets if left idle" premise
+    /// the C driver's 15 ms hot loop was built on did not survive
+    /// measurement (see `DeviceConfig::keepalive`).
+    ///
+    /// The reply is parsed, so a real message the poll happened to drain is
+    /// queued rather than discarded as the C keepalive did.
     fn keepalive(&mut self) {
         if self.wedged {
             self.last_wire = Instant::now();

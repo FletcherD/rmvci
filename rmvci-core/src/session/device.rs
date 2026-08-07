@@ -16,17 +16,23 @@ pub struct DeviceConfig {
     /// Serial port path; `None` falls back to `$MVCI_PORT`, then
     /// `/dev/ttyUSB0`.
     pub port: Option<String>,
-    /// Idle interval after which the actor pokes the adapter so it doesn't
-    /// reset. Every real transaction postpones it. The C driver hammered
-    /// every 15 ms; the true watchdog threshold is measured on the bench in
-    /// M4 — until then 100 ms is the conservative default.
+    /// How long the wire may sit idle before the actor pokes the adapter.
+    /// Every real transaction postpones it.
+    ///
+    /// The C driver polled every 15 ms on the premise that the adapter
+    /// resets if left alone. Measured on the real cable
+    /// (`live_keepalive_threshold`), a session survives **at least 5 minutes**
+    /// of silence — with a channel connected and without — so that premise
+    /// does not hold at any timescale a driver cares about, and the poll is
+    /// really serving liveness detection and background RX draining.
+    /// 5 s keeps both responsive with a ~60x margin under what was measured.
     pub keepalive: Duration,
     pub clock: Arc<dyn Clock>,
 }
 
 impl Default for DeviceConfig {
     fn default() -> Self {
-        Self { port: None, keepalive: Duration::from_millis(100), clock: Arc::new(RealClock) }
+        Self { port: None, keepalive: Duration::from_secs(5), clock: Arc::new(RealClock) }
     }
 }
 

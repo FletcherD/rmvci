@@ -80,6 +80,20 @@ Both implement `UdsTransport`, so switching is one line. Use the firmware
 path for short requests (the `21 43` case); use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
 
+## Measured on the real cable
+
+Two things the C driver assumed turned out not to hold, so rMVCI does
+something different:
+
+- **The adapter does not need constant poking.** libMVCI polls it every 15 ms
+  because "the adapter resets if left idle". A session here survives **at
+  least 5 minutes** of complete silence, with a channel connected and without
+  (`live_keepalive_threshold`). The idle poll is kept for liveness detection
+  and background RX draining, at a 5 s default instead of 15 ms.
+- **A keepalive reply can carry real data.** The C keepalive discarded its
+  reply wholesale, so any message it happened to drain was lost. Here the
+  reply is parsed and queued for the next `read`.
+
 ## Debugging
 
 The driver logs through `tracing`; install any subscriber and set `RUST_LOG`.
