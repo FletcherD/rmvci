@@ -11,12 +11,16 @@ default = ["serial"]
 # serialport's default features pull in libudev for enumeration; we only ever
 # open by explicit path, so leave them off.
 serial = ["dep:serialport"]
+# Direct FT232R access over pure-Rust USB: no ftdi_sio, and the latency
+# timer becomes settable without root.
+usb = ["dep:nusb"]
 
 [dependencies]
 des = "0.8"
 thiserror = "2"
 bitflags = "2"
 serialport = { version = "4", default-features = false, optional = true }
+nusb = { version = "0.2", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]

@@ -150,6 +150,36 @@ timer it could not set.
 RUST_LOG=rmvci_core=trace cargo run -p prius-hvac -- /dev/ttyUSB0
 ```
 
+## Transports
+
+The core talks to the cable through a five-method `Transport` trait, so the
+backend is swappable and everything above it is untouched.
+
+| backend | feature | use when |
+|---|---|---|
+| `SerialTransport` | `serial` (default) | normal desktop use via the kernel's `ftdi_sio` |
+| `UsbTransport` | `usb` | you want the latency fix without root, or there is no `ftdi_sio` |
+| `MockTransport` | always | tests; scripted byte-exact exchanges |
+
+```rust
+let dev = Device::open("/dev/ttyUSB0")?;                              // serial
+let dev = Device::open_usb(Some("A69QL5OE"), Default::default())?;    // raw USB
+```
+
+`UsbTransport` drives the FT232R directly with [nusb](https://github.com/kevinmehall/nusb)
+(pure Rust, no libusb). It takes the interface away from `ftdi_sio` while
+open and hands it back on drop, so the `/dev/ttyUSBn` node disappears and
+returns around it — give udev a couple of seconds to recreate the
+`/dev/serial/by-id` symlink before expecting it. It needs write access to the
+`/dev/bus/usb` node, which on most desktops the `plugdev` ACL already grants.
+
+**Measured on the cable** (`usb_vs_serial_latency`), median per exchange:
+
+| | per `21 43` exchange |
+|---|---|
+| tty, latency timer at the 16 ms default | 48.0 ms |
+| raw USB, timer set to 2 ms by control transfer | **30.0 ms** |
+
 ## Throughput: fix the FTDI latency timer
 
 The protocol is strict request/response, and the FT232R holds any reply

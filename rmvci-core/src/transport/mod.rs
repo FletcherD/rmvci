@@ -9,10 +9,14 @@ use crate::error::TransportError;
 pub mod mock;
 #[cfg(feature = "serial")]
 pub mod serial;
+#[cfg(feature = "usb")]
+pub mod usb;
 
 pub use mock::MockTransport;
 #[cfg(feature = "serial")]
 pub use serial::SerialTransport;
+#[cfg(feature = "usb")]
+pub use usb::UsbTransport;
 
 /// Outcome of the best-effort FTDI latency-timer fix. The FT232R holds
 /// replies under 64 bytes for the full latency interval, and the kernel

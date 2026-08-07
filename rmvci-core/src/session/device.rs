@@ -92,6 +92,20 @@ impl Device {
         Self::open_transport(io, cfg)
     }
 
+    /// Open the cable over raw USB instead of a tty, claiming it away from
+    /// `ftdi_sio`. `serial` picks one FT232R among several by its USB serial
+    /// string (the Mini-VCI's is on the cable, e.g. `A69QL5OE`); `None` takes
+    /// the first.
+    ///
+    /// Prefer this when you cannot set the FTDI latency timer via sysfs —
+    /// here it is a control transfer, so no root and no udev rule. Needs
+    /// write access to the `/dev/bus/usb` node.
+    #[cfg(feature = "usb")]
+    pub fn open_usb(serial: Option<&str>, cfg: DeviceConfig) -> Result<Self, Error> {
+        let io = crate::transport::UsbTransport::open(serial)?;
+        Self::open_transport(io, cfg)
+    }
+
     /// Open over any transport (mock transports in tests).
     pub fn open_transport<T: Transport>(io: T, cfg: DeviceConfig) -> Result<Self, Error> {
         let (tx, key, closed) = actor::spawn(io, Arc::new(cfg))?;

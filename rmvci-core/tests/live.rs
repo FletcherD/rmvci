@@ -343,3 +343,120 @@ fn smoke_open_version_survives_idle() {
     assert_eq!(again, version);
     println!("survived 60 s of silence");
 }
+
+/// The USB backend against the same cable and bench rig as the serial one.
+/// Its headline claim is that the FTDI latency timer becomes settable
+/// without root, so this asserts that outright rather than just logging it.
+///
+/// Needs write access to the `/dev/bus/usb` node (a udev rule or group
+/// membership), and takes the cable away from `ftdi_sio` while it runs.
+///
+/// ```sh
+/// python3 re/bench/isotp_responder.py &
+/// RMVCI_USB_SERIAL=A69QL5OE cargo test --features usb --test live usb_ -- --ignored --nocapture
+/// ```
+#[cfg(feature = "usb")]
+#[test]
+#[ignore = "needs the cable + /dev/bus/usb access (set RMVCI_USB_SERIAL)"]
+fn usb_backend_end_to_end() {
+    use rmvci_core::transport::{LatencyResult, Transport};
+    use rmvci_core::{CanId, DeviceConfig, FirmwareIsoTp, IsoTp, IsoTpConfig};
+
+    let serial = std::env::var("RMVCI_USB_SERIAL").ok();
+
+    // The claim that justifies this backend: latency without privileges.
+    {
+        let mut io = rmvci_core::transport::UsbTransport::open(serial.as_deref())
+            .expect("open FT232R over USB");
+        match io.optimize_latency() {
+            LatencyResult::Set { millis } => {
+                println!("latency timer set to {millis} ms with no root");
+                assert_eq!(millis, 2);
+            }
+            other => panic!("expected the latency timer to be settable over USB, got {other:?}"),
+        }
+    }
+
+    let dev = Device::open_usb(serial.as_deref(), DeviceConfig::default()).expect("open over USB");
+    println!("DES key: {:02x?}", dev.des_key());
+    assert_eq!(dev.firmware_version().expect("firmware version"), "J2534 MINIV1.03");
+
+    let tx = CanId::Std(0x7c4);
+    let rx = CanId::Std(0x7cc);
+    let timeout = Duration::from_secs(3);
+
+    let mut fw = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel");
+    let a = fw.request(&[0x21, 0x43], timeout).expect("21 43 over USB");
+    println!("usb/firmware 21 43 -> {a:02x?}");
+    assert_eq!(a, [0x61, 0x43, 0x7b, 0x79]);
+    drop(fw);
+    dev.close();
+
+    let dev =
+        Device::open_usb(serial.as_deref(), DeviceConfig::default()).expect("reopen over USB");
+    let mut host = IsoTp::new(&dev, IsoTpConfig::new(tx, rx)).expect("host channel");
+    let b = host.request(&[0x21, 0x44], timeout).expect("21 44 over USB");
+    println!("usb/host     21 44 -> {} bytes", b.len());
+    assert_eq!(b.len(), 40);
+    assert_eq!(&b[..2], &[0x61, 0x44]);
+}
+
+/// Quantify the latency-timer win: the same request/response loop over the
+/// tty (timer stuck at whatever sysfs allows, 16 ms unprivileged) and over
+/// raw USB (timer set to 2 ms by control transfer). Prints per-exchange
+/// medians rather than asserting a threshold — the numbers depend on the
+/// host — but a USB run that is not clearly faster means the control
+/// transfer silently did nothing.
+#[cfg(feature = "usb")]
+#[test]
+#[ignore = "needs the cable + bench responder; compares tty vs USB"]
+fn usb_vs_serial_latency() {
+    use rmvci_core::{CanId, DeviceConfig, FirmwareIsoTp, UdsTransport};
+
+    const N: usize = 40;
+    let tx = CanId::Std(0x7c4);
+    let rx = CanId::Std(0x7cc);
+
+    fn time_exchanges(tp: &mut dyn UdsTransport) -> Vec<f64> {
+        // One warm-up exchange, then measure.
+        let _ = tp.request(&[0x21, 0x43], Duration::from_secs(2));
+        (0..N)
+            .map(|_| {
+                let t0 = std::time::Instant::now();
+                tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
+                t0.elapsed().as_secs_f64() * 1000.0
+            })
+            .collect()
+    }
+
+    fn report(label: &str, mut ms: Vec<f64>) -> f64 {
+        ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let median = ms[ms.len() / 2];
+        println!("{label}: median {:.1} ms  min {:.1}  max {:.1}", median, ms[0], ms[ms.len() - 1]);
+        median
+    }
+
+    let serial_median = {
+        let dev = open_retrying(&port());
+        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel over tty");
+        let r = time_exchanges(&mut tp);
+        drop(tp);
+        dev.close();
+        report("tty", r)
+    };
+
+    let usb_median = {
+        let serial = std::env::var("RMVCI_USB_SERIAL").ok();
+        let dev =
+            Device::open_usb(serial.as_deref(), DeviceConfig::default()).expect("open over USB");
+        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel over USB");
+        let r = time_exchanges(&mut tp);
+        report("usb", r)
+    };
+
+    println!("USB is {:.1}x faster per exchange", serial_median / usb_median);
+    assert!(
+        usb_median < serial_median,
+        "USB should be faster; the latency control transfer may have done nothing"
+    );
+}
