@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["rmvci-core", "rmvci-j2534", "examples/prius-hvac"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+# Derived from libMVCI (GPL-3.0): structure ported from its C sources and the
+# captured test vectors are carried over verbatim.
+license = "GPL-3.0-or-later"

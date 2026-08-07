@@ -1,0 +1,10 @@
+[package]
+name = "prius-hvac"
+description = "Read the Gen 2 Prius A/C amplifier air-mix servo position (7C4 / 21 43) through the Mini-VCI cable"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rmvci-core = { path = "../../rmvci-core" }

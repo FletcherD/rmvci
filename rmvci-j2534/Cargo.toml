@@ -1,0 +1,14 @@
+[package]
+name = "rmvci-j2534"
+description = "SAE J2534 PassThru cdylib for the Mini-VCI cable, over rmvci-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# `lib` as well so integration tests can call the exports in-process.
+crate-type = ["cdylib", "lib"]
+
+[dependencies]
+rmvci-core = { path = "../rmvci-core" }
