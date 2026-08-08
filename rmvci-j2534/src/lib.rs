@@ -11,7 +11,7 @@
 
 use core::ffi::{c_char, c_long, c_ulong, c_void};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rmvci_core::{CodecError, Device, DeviceConfig, Error, ProtocolId, RawChannel};
@@ -69,6 +69,18 @@ pub fn _set_device_factory(f: DeviceFactory) {
 
 fn set_err(msg: impl Into<String>) {
     *LAST_ERROR.lock().unwrap() = msg.into();
+}
+
+/// Epoch for message timestamps, started at the first `PassThruOpen`.
+static TS_EPOCH: OnceLock<Instant> = OnceLock::new();
+
+/// Receive timestamp for `PASSTHRU_MSG.Timestamp`, in microseconds relative to
+/// the first device open. The firmware provides no timestamp, so this is a host
+/// monotonic clock stamped when the shim hands the message back — the closest
+/// available approximation. The 32-bit microsecond field wraps at ~71.6
+/// minutes, which is the J2534 convention, so the truncation is expected.
+fn timestamp_micros() -> u32 {
+    TS_EPOCH.get_or_init(Instant::now).elapsed().as_micros() as u32
 }
 
 fn code_of(e: &Error) -> c_long {
@@ -137,6 +149,8 @@ pub unsafe extern "system" fn PassThruOpen(name: *const c_void, device_id: *mut 
             set_err("NULL pDeviceID");
             return ERR_NULL_PARAMETER;
         }
+        // Start the message-timestamp clock at the first open.
+        TS_EPOCH.get_or_init(Instant::now);
         let name_owned = if name.is_null() {
             None
         } else {
@@ -463,7 +477,7 @@ pub unsafe extern "system" fn PassThruReadMsgs(
                         o.protocol_id = chan.proto().wire();
                         o.rx_status = m.rx_status.bits(); // device bits match J2534
                         o.tx_flags = 0;
-                        o.timestamp = 0;
+                        o.timestamp = timestamp_micros();
                         o.data_size = n as u32;
                         o.extra_data_index = n as u32;
                         got += 1;

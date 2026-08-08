@@ -265,6 +265,10 @@ fn shim_end_to_end() {
         assert_eq!(rmsg.data_size, 8);
         assert_eq!(&rmsg.data[..8], &[0x00, 0x00, 0x07, 0xcc, 0x61, 0x43, 0x7b, 0x79]);
         assert_eq!(rmsg.protocol_id, 6);
+        // The message carries a host receive timestamp (µs since first open),
+        // which by now — after handshake, connect, filter, config and a write —
+        // is well past zero.
+        assert!(rmsg.timestamp > 0, "expected a non-zero receive timestamp");
 
         // --- periodic messages: id is written back, stop takes it verbatim ---
         let pmsg = boxed_msg(&[0x00, 0x00, 0x07, 0xc4, 0x3e, 0x00], 0);

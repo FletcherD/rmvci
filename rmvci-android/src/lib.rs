@@ -17,6 +17,8 @@
 //!     external fun open(port: UsbSerialPort, connection: UsbDeviceConnection): Long
 //!     external fun firmwareVersion(handle: Long): String?
 //!     /** One ISO-TP request/response, e.g. byteArrayOf(0x21, 0x43).
+//!      *  txId/rxId use the SocketCAN convention: bit 31 (0x80000000) set
+//!      *  means a 29-bit extended id (low 29 bits), else an 11-bit id.
 //!      *  extAddr is the extended/mixed-addressing byte, or -1 for normal
 //!      *  addressing. */
 //!     external fun request(handle: Long, txId: Int, rxId: Int, extAddr: Int,
@@ -58,16 +60,29 @@ fn set_err(msg: impl Into<String>) {
     *LAST_ERROR.lock().unwrap() = msg;
 }
 
+/// Decode a CAN id from the JNI int using the SocketCAN EFF convention: bit 31
+/// (0x8000_0000) set marks a 29-bit extended id (low 29 bits); otherwise it is
+/// an 11-bit standard id (low 11 bits).
+fn can_id(raw: jint) -> CanId {
+    let v = raw as u32;
+    if v & 0x8000_0000 != 0 {
+        CanId::Ext(v & 0x1fff_ffff)
+    } else {
+        CanId::Std((v & 0x7ff) as u16)
+    }
+}
+
 /// What a handle points at. The `Device` keeps the session (and its actor
 /// thread) alive; channels are opened per request so the app does not have
 /// to model the adapter's single-filter-per-width rule.
 struct Session {
     device: Device,
-    /// Cached channel, keyed by the (tx, rx, ext_addr) it was opened for
-    /// (ext_addr is -1 for normal addressing). Connecting and installing a
+    /// Cached channel, keyed by the raw (tx_id, rx_id, ext_addr) ints it was
+    /// opened for (ext_addr is -1 for normal addressing). Keying on the raw
+    /// ints keeps 11- and 29-bit ids distinct. Connecting and installing a
     /// filter costs two round trips, so an app polling one ECU should not pay
     /// them on every request.
-    tp: Option<(u16, u16, i32, FirmwareIsoTp)>,
+    tp: Option<(i32, i32, i32, FirmwareIsoTp)>,
 }
 
 /// # Safety
@@ -165,20 +180,20 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_request<'a>(
         }
     };
 
-    let (tx_raw, rx_raw) = (tx_id as u16, rx_id as u16);
-    if !matches!(&s.tp, Some((t, r, e, _)) if *t == tx_raw && *r == rx_raw && *e == ext_addr) {
+    if !matches!(&s.tp, Some((t, r, e, _)) if *t == tx_id && *r == rx_id && *e == ext_addr) {
         // Different ECU/addressing (or first use): drop the old channel before
         // opening the new one — the adapter keeps one filter per identifier
         // width.
         s.tp = None;
+        let (tx, rx) = (can_id(tx_id), can_id(rx_id));
         // ext_addr < 0 means normal addressing; 0..=255 selects extended/mixed.
         let opened = if (0..=255).contains(&ext_addr) {
-            FirmwareIsoTp::with_ext_addr(&s.device, CanId::Std(tx_raw), CanId::Std(rx_raw), ext_addr as u8)
+            FirmwareIsoTp::with_ext_addr(&s.device, tx, rx, ext_addr as u8)
         } else {
-            FirmwareIsoTp::new(&s.device, CanId::Std(tx_raw), CanId::Std(rx_raw))
+            FirmwareIsoTp::new(&s.device, tx, rx)
         };
         match opened {
-            Ok(tp) => s.tp = Some((tx_raw, rx_raw, ext_addr, tp)),
+            Ok(tp) => s.tp = Some((tx_id, rx_id, ext_addr, tp)),
             Err(e) => {
                 set_err(format!("open ISO15765 channel: {e}"));
                 return null();
@@ -226,5 +241,23 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_lastError(env: JNIEnv, _class: JClas
     match env.new_string(msg) {
         Ok(js) => js.into_raw(),
         Err(_) => JObject::null().into_raw(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::can_id;
+    use rmvci_core::CanId;
+
+    #[test]
+    fn can_id_decodes_std_and_ext() {
+        // Plain 11-bit ids.
+        assert_eq!(can_id(0x7c4), CanId::Std(0x7c4));
+        assert_eq!(can_id(0x7ff), CanId::Std(0x7ff));
+        // EFF flag (bit 31) selects a 29-bit id from the low 29 bits.
+        assert_eq!(can_id(0x1234_5678u32 as i32 | (0x8000_0000u32 as i32)), CanId::Ext(0x1234_5678));
+        assert_eq!(can_id(0x18da_f110u32 as i32 | (0x8000_0000u32 as i32)), CanId::Ext(0x18da_f110));
+        // A 29-bit diagnostic id with the flag set.
+        assert_eq!(can_id(0x98da_f110u32 as i32), CanId::Ext(0x18da_f110));
     }
 }
