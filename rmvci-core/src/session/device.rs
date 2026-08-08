@@ -165,6 +165,28 @@ impl Device {
         Ok(String::from_utf8_lossy(&body[..end]).into_owned())
     }
 
+    /// SET_PROGRAMMING_VOLTAGE (0x0D) — device-scoped. `pin` is the J2534 pin
+    /// number, `millivolts` the target voltage (`0xffffffff`/`0` are the
+    /// voltage-off sentinels).
+    ///
+    /// On the Mini-VCI the firmware stores the value and drives no pin — a
+    /// no-op that reports success — so this is faithful passthrough, not a
+    /// fabricated result: cables whose firmware implements the opcode act on
+    /// it. Do not read a success here as "a voltage is now applied" on a
+    /// Mini-VCI.
+    pub fn set_programming_voltage(&self, pin: u32, millivolts: u32) -> Result<(), Error> {
+        let resp = self.transact(
+            inner::set_programming_voltage(pin, millivolts),
+            Duration::from_millis(2000),
+        )?;
+        let status = inner::status_of(&resp, Cmd::SetProgrammingVoltage)?;
+        if status.is_ok() {
+            Ok(())
+        } else {
+            Err(Error::Rejected { cmd: Cmd::SetProgrammingVoltage, status })
+        }
+    }
+
     pub(crate) fn transact(&self, inner: Vec<u8>, timeout: Duration) -> Result<Vec<u8>, Error> {
         let (rtx, rrx) = mpsc::channel();
         self.tx

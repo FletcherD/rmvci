@@ -6,7 +6,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 
 use crate::error::Error;
-use crate::session::protocol::{CanFramed, CanId, FilterSpec, Protocol};
+use crate::session::protocol::{CanFramed, CanId, FilterSpec, KLine, Protocol};
 use crate::session::raw::RawChannel;
 use crate::types::{RxMsg, TxFlags};
 
@@ -85,8 +85,9 @@ impl<P: Protocol> Channel<P> {
     }
 }
 
-impl Channel<crate::session::protocol::Iso14230> {
-    /// Send raw K-line message bytes (header + payload).
+impl<P: KLine> Channel<P> {
+    /// Send raw K-line message bytes (header + payload). Works for both
+    /// ISO14230 and ISO9141 — they share the firmware's K-line path.
     pub fn write(&mut self, msg: &[u8]) -> Result<(), Error> {
         self.raw.write(0, msg)
     }
@@ -94,6 +95,12 @@ impl Channel<crate::session::protocol::Iso14230> {
     /// FAST_INIT wake-up; returns the ECU key bytes.
     pub fn fast_init(&mut self, init: &[u8]) -> Result<Vec<u8>, Error> {
         self.raw.fast_init(init)
+    }
+
+    /// FIVE_BAUD_INIT (slow init); returns the ECU key bytes. The usual init
+    /// for ISO9141 and older KWP2000 sessions.
+    pub fn five_baud_init(&mut self, init: &[u8]) -> Result<Vec<u8>, Error> {
+        self.raw.five_baud_init(init)
     }
 
     pub fn clear_periodic(&mut self) -> Result<(), Error> {

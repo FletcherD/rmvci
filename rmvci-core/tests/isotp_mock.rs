@@ -194,3 +194,77 @@ fn firmware_path_reply_and_ffdl_guard() {
         other => panic!("expected FirmwareFfDlLimit, got {other:?}"),
     }
 }
+
+/// Extended/mixed addressing on the firmware path: the acceptance filter is
+/// 5 bytes wide (idlen=5, address in the 5th), the transmitted message carries
+/// the address byte at msg[4] with TxFlags ISO15765_ADDR_TYPE (0x80), and the
+/// reply — flagged RxStatus 0x80 — has its leading address byte stripped.
+#[test]
+fn firmware_path_extended_addressing() {
+    const ADDR: u8 = 0xf1;
+    let mask5 = [0xff, 0xff, 0xff, 0xff, 0xff];
+    let pattern5 = [0x00, 0x00, 0x07, 0xcc, ADDR]; // rx id + address
+    let flow5 = [0x00, 0x00, 0x07, 0xc4, ADDR]; // tx id + address
+
+    let mut steps = handshake_steps();
+    steps.push(Step::exchange(
+        enc(&inner::connect(ProtocolId::Iso15765, 0, 500_000)),
+        status_reply(0x07),
+    ));
+    // 5-byte flow-control filter (idlen=5).
+    steps.push(Step::exchange(
+        enc(&inner::start_filter(
+            ProtocolId::Iso15765,
+            0x000e_7a00,
+            3,
+            &mask5,
+            &pattern5,
+            Some(&flow5),
+            5,
+        )
+        .unwrap()),
+        status_reply(0x0b),
+    ));
+    // TX: address byte at msg[4], TxFlags = ISO15765_ADDR_TYPE (0x80).
+    steps.push(write_ok(ProtocolId::Iso15765, 0x80, &{
+        let mut m = TX_ID.to_vec();
+        m.extend_from_slice(&[ADDR, 0x21, 0x43]);
+        m
+    }));
+    // Start-of-message indication, then the addr-prefixed reply flagged 0x80.
+    steps.push(poll_delivers(ProtocolId::Iso15765, 0x0002, &RX_ID));
+    steps.push(poll_delivers(ProtocolId::Iso15765, 0x0080, &{
+        let mut m = RX_ID.to_vec();
+        m.extend_from_slice(&[ADDR, 0x61, 0x43, 0x7b, 0x79]);
+        m
+    }));
+
+    let device = dev(steps);
+    let mut tp = FirmwareIsoTp::with_ext_addr(&device, CanId::Std(0x7c4), CanId::Std(0x7cc), ADDR)
+        .expect("firmware ext-addr channel");
+    let r = tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
+    assert_eq!(r, [0x61, 0x43, 0x7b, 0x79]);
+}
+
+/// The same FF_DL>255 guard must also protect the raw `PassThruWriteMsgs` path
+/// (a J2534 app writing an ISO15765 message directly, bypassing FirmwareIsoTp).
+/// The guard fires before any wire traffic, so no write Step is scripted.
+#[test]
+fn raw_write_guards_ffdl_over_255() {
+    let mut steps = handshake_steps();
+    steps.push(Step::exchange(
+        enc(&inner::connect(ProtocolId::Iso15765, 0, 500_000)),
+        status_reply(0x07),
+    ));
+
+    let device = dev(steps);
+    let mut chan = device.connect_raw(ProtocolId::Iso15765, 0, 500_000).expect("connect");
+
+    // 4-byte id + 256-byte payload -> payload 256 > 255.
+    let mut msg = TX_ID.to_vec();
+    msg.extend(std::iter::repeat_n(0u8, 256));
+    match chan.write(0, &msg) {
+        Err(Error::IsoTp(IsoTpError::FirmwareFfDlLimit(256))) => {}
+        other => panic!("expected FirmwareFfDlLimit, got {other:?}"),
+    }
+}

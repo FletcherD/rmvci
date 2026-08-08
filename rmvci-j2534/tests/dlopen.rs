@@ -58,9 +58,11 @@ fn dlopen_resolves_and_calls_all_exports() {
         let mut buf = [0 as c_char; 80];
         assert_eq!(get_last_error(buf.as_mut_ptr()), 0x00);
 
+        // StopPeriodicMsg is implemented now; with no channel open on this
+        // slot it reports an invalid channel id rather than "not supported".
         let stop_periodic: libloading::Symbol<
             unsafe extern "system" fn(c_ulong, c_ulong) -> c_long,
         > = lib.get(b"PassThruStopPeriodicMsg").unwrap();
-        assert_eq!(stop_periodic(0x100, 1), 0x01); // ERR_NOT_SUPPORTED
+        assert_eq!(stop_periodic(0x100, 1), 0x02); // ERR_INVALID_CHANNEL_ID
     }
 }

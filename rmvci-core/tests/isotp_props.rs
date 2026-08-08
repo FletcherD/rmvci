@@ -19,9 +19,20 @@ fn pipe(
     rx_stmin: u8,
     padding: Option<u8>,
 ) -> Result<(Vec<u8>, Vec<usize>), IsoTpError> {
+    pipe_addr(payload, rx_bs, rx_stmin, padding, None)
+}
+
+fn pipe_addr(
+    payload: &[u8],
+    rx_bs: u8,
+    rx_stmin: u8,
+    padding: Option<u8>,
+    addr: Option<u8>,
+) -> Result<(Vec<u8>, Vec<usize>), IsoTpError> {
+    let h = addr.is_some() as usize; // PCI sits after the address byte
     let mut now = Instant::now();
-    let mut tx = TxMachine::new(payload, padding, N_BS, 8)?;
-    let mut rx = RxMachine::new(rx_bs, rx_stmin, padding, N_CR);
+    let mut tx = TxMachine::with_addr(payload, padding, N_BS, 8, addr)?;
+    let mut rx = RxMachine::with_addr(rx_bs, rx_stmin, padding, N_CR, addr);
 
     let mut result = None;
     let mut cf_counts = Vec::new();
@@ -33,12 +44,12 @@ fn pipe(
         match tx.next(now)? {
             TxAction::Send(frame) => {
                 sent_frames += 1;
-                if frame[0] >> 4 == 0x2 {
+                if frame[h] >> 4 == 0x2 {
                     cfs_in_block += 1;
                 }
                 match rx.on_frame(&frame, now)? {
                     RxEvent::SendFc(fc) => {
-                        if cfs_in_block > 0 || frame[0] >> 4 == 0x2 {
+                        if cfs_in_block > 0 || frame[h] >> 4 == 0x2 {
                             cf_counts.push(cfs_in_block);
                             cfs_in_block = 0;
                         }
@@ -74,6 +85,20 @@ proptest! {
         pad in proptest::option::of(Just(0x00u8)),
     ) {
         let (got, _) = pipe(&payload, rx_bs, rx_stmin, pad).unwrap();
+        prop_assert_eq!(got, payload);
+    }
+
+    /// Same round trip with extended/mixed addressing: every frame carries the
+    /// address byte ahead of the PCI, so usable data per frame drops by one,
+    /// but the reassembled payload must still match exactly.
+    #[test]
+    fn round_trip_ext_addr(
+        payload in proptest::collection::vec(any::<u8>(), 1..=1200),
+        rx_bs in 0u8..=16,
+        rx_stmin in any::<u8>(),
+        addr in any::<u8>(),
+    ) {
+        let (got, _) = pipe_addr(&payload, rx_bs, rx_stmin, Some(0x00), Some(addr)).unwrap();
         prop_assert_eq!(got, payload);
     }
 

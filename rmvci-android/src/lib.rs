@@ -16,8 +16,10 @@
 //!     /** Returns a handle, or 0 on failure — see lastError(). */
 //!     external fun open(port: UsbSerialPort, connection: UsbDeviceConnection): Long
 //!     external fun firmwareVersion(handle: Long): String?
-//!     /** One ISO-TP request/response, e.g. byteArrayOf(0x21, 0x43). */
-//!     external fun request(handle: Long, txId: Int, rxId: Int,
+//!     /** One ISO-TP request/response, e.g. byteArrayOf(0x21, 0x43).
+//!      *  extAddr is the extended/mixed-addressing byte, or -1 for normal
+//!      *  addressing. */
+//!     external fun request(handle: Long, txId: Int, rxId: Int, extAddr: Int,
 //!                          req: ByteArray, timeoutMs: Int): ByteArray?
 //!     external fun close(handle: Long)
 //!     external fun lastError(): String
@@ -61,10 +63,11 @@ fn set_err(msg: impl Into<String>) {
 /// to model the adapter's single-filter-per-width rule.
 struct Session {
     device: Device,
-    /// Cached channel, keyed by the identifier pair it was opened for.
-    /// Connecting and installing a filter costs two round trips, so an app
-    /// polling one ECU should not pay them on every request.
-    tp: Option<(u16, u16, FirmwareIsoTp)>,
+    /// Cached channel, keyed by the (tx, rx, ext_addr) it was opened for
+    /// (ext_addr is -1 for normal addressing). Connecting and installing a
+    /// filter costs two round trips, so an app polling one ECU should not pay
+    /// them on every request.
+    tp: Option<(u16, u16, i32, FirmwareIsoTp)>,
 }
 
 /// # Safety
@@ -146,6 +149,7 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_request<'a>(
     handle: jlong,
     tx_id: jint,
     rx_id: jint,
+    ext_addr: jint,
     req: JByteArray<'a>,
     timeout_ms: jint,
 ) -> jbyteArray {
@@ -162,19 +166,26 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_request<'a>(
     };
 
     let (tx_raw, rx_raw) = (tx_id as u16, rx_id as u16);
-    if !matches!(&s.tp, Some((t, r, _)) if *t == tx_raw && *r == rx_raw) {
-        // Different ECU (or first use): drop the old channel before opening
-        // the new one — the adapter keeps one filter per identifier width.
+    if !matches!(&s.tp, Some((t, r, e, _)) if *t == tx_raw && *r == rx_raw && *e == ext_addr) {
+        // Different ECU/addressing (or first use): drop the old channel before
+        // opening the new one — the adapter keeps one filter per identifier
+        // width.
         s.tp = None;
-        match FirmwareIsoTp::new(&s.device, CanId::Std(tx_raw), CanId::Std(rx_raw)) {
-            Ok(tp) => s.tp = Some((tx_raw, rx_raw, tp)),
+        // ext_addr < 0 means normal addressing; 0..=255 selects extended/mixed.
+        let opened = if (0..=255).contains(&ext_addr) {
+            FirmwareIsoTp::with_ext_addr(&s.device, CanId::Std(tx_raw), CanId::Std(rx_raw), ext_addr as u8)
+        } else {
+            FirmwareIsoTp::new(&s.device, CanId::Std(tx_raw), CanId::Std(rx_raw))
+        };
+        match opened {
+            Ok(tp) => s.tp = Some((tx_raw, rx_raw, ext_addr, tp)),
             Err(e) => {
                 set_err(format!("open ISO15765 channel: {e}"));
                 return null();
             }
         }
     }
-    let tp = &mut s.tp.as_mut().unwrap().2;
+    let tp = &mut s.tp.as_mut().unwrap().3;
     let reply = match tp.request(&request, Duration::from_millis(timeout_ms.max(1) as u64)) {
         Ok(r) => r,
         Err(e) => {

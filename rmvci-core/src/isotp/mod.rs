@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, IsoTpError};
 use crate::session::protocol::{Can, CanConfig, CanFilter, CanId, FlowControlFilter, Iso15765};
 use crate::session::{Channel, Device};
-use crate::types::RxMsg;
+use crate::types::{RxMsg, RxStatus, TxFlags};
 
 use machine::{RxEvent, RxMachine, TxAction, TxMachine};
 
@@ -50,6 +50,10 @@ pub struct IsoTpConfig {
     pub n_cr: Duration,
     /// How many FS=WAIT frames to tolerate before giving up.
     pub wft_max: u8,
+    /// Extended/mixed addressing byte. When set, every frame carries it ahead
+    /// of the PCI (usable data per frame drops by one) and the receive filter
+    /// additionally matches on it.
+    pub ext_addr: Option<u8>,
 }
 
 impl IsoTpConfig {
@@ -63,7 +67,14 @@ impl IsoTpConfig {
             n_bs: Duration::from_secs(1),
             n_cr: Duration::from_secs(1),
             wft_max: 8,
+            ext_addr: None,
         }
+    }
+
+    /// Enable extended/mixed addressing with the given address byte.
+    pub fn with_ext_addr(mut self, addr: u8) -> Self {
+        self.ext_addr = Some(addr);
+        self
     }
 }
 
@@ -99,7 +110,10 @@ impl IsoTp {
             Some(m)
                 if !m.is_indication()
                     && m.data.len() > 4
-                    && m.data[..4] == self.cfg.rx_id.to_wire() =>
+                    && m.data[..4] == self.cfg.rx_id.to_wire()
+                    // Raw CAN cannot hardware-filter on the address byte, so
+                    // discriminate it here when extended addressing is on.
+                    && self.cfg.ext_addr.is_none_or(|a| m.data.get(4) == Some(&a)) =>
             {
                 Ok(Some(m))
             }
@@ -108,7 +122,13 @@ impl IsoTp {
     }
 
     pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let mut tx = TxMachine::new(payload, self.cfg.padding, self.cfg.n_bs, self.cfg.wft_max)?;
+        let mut tx = TxMachine::with_addr(
+            payload,
+            self.cfg.padding,
+            self.cfg.n_bs,
+            self.cfg.wft_max,
+            self.cfg.ext_addr,
+        )?;
         loop {
             match tx.next(Instant::now())? {
                 TxAction::Send(frame) => self.chan.send(self.cfg.tx_id, &frame)?,
@@ -134,8 +154,13 @@ impl IsoTp {
     }
 
     pub fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
-        let mut rx =
-            RxMachine::new(self.cfg.rx_bs, self.cfg.rx_stmin, self.cfg.padding, self.cfg.n_cr);
+        let mut rx = RxMachine::with_addr(
+            self.cfg.rx_bs,
+            self.cfg.rx_stmin,
+            self.cfg.padding,
+            self.cfg.n_cr,
+            self.cfg.ext_addr,
+        );
         let deadline = Instant::now() + timeout;
         loop {
             let now = Instant::now();
@@ -177,11 +202,15 @@ pub struct FirmwareIsoTp {
     chan: Channel<Iso15765>,
     tx_id: CanId,
     rx_id: CanId,
+    /// Extended/mixed addressing byte. The firmware inserts it per frame
+    /// itself; the host prepends it once to the whole payload and sets
+    /// `ISO15765_ADDR_TYPE`.
+    ext_addr: Option<u8>,
 }
 
 impl FirmwareIsoTp {
     pub fn new(dev: &Device, tx_id: CanId, rx_id: CanId) -> Result<Self, Error> {
-        Self::with_bitrate(dev, tx_id, rx_id, CanConfig::default())
+        Self::configure(dev, tx_id, rx_id, CanConfig::default(), None)
     }
 
     pub fn with_bitrate(
@@ -190,26 +219,74 @@ impl FirmwareIsoTp {
         rx_id: CanId,
         can: CanConfig,
     ) -> Result<Self, Error> {
+        Self::configure(dev, tx_id, rx_id, can, None)
+    }
+
+    /// Connect with extended/mixed addressing: the acceptance filter matches on
+    /// the 5th (address) byte, and every exchange carries `addr`.
+    pub fn with_ext_addr(
+        dev: &Device,
+        tx_id: CanId,
+        rx_id: CanId,
+        addr: u8,
+    ) -> Result<Self, Error> {
+        Self::configure(dev, tx_id, rx_id, CanConfig::default(), Some(addr))
+    }
+
+    fn configure(
+        dev: &Device,
+        tx_id: CanId,
+        rx_id: CanId,
+        can: CanConfig,
+        ext_addr: Option<u8>,
+    ) -> Result<Self, Error> {
         let mut chan = dev.connect::<Iso15765>(can)?;
-        chan.set_filter(FlowControlFilter::exact(rx_id, tx_id))?;
-        Ok(Self { chan, tx_id, rx_id })
+        let filter = FlowControlFilter::exact(rx_id, tx_id);
+        let filter = match ext_addr {
+            Some(a) => filter.with_ext_addr(a),
+            None => filter,
+        };
+        chan.set_filter(filter)?;
+        Ok(Self { chan, tx_id, rx_id, ext_addr })
     }
 
     pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
+        // With extended addressing the firmware expects the address byte at the
+        // head of the payload (it lands at msg[4] on the wire, before the PCI)
+        // and segments from there; without it the payload is sent as-is.
+        let (buf, flags) = match self.ext_addr {
+            Some(a) => {
+                let mut b = Vec::with_capacity(1 + payload.len());
+                b.push(a);
+                b.extend_from_slice(payload);
+                (b, TxFlags::ISO15765_ADDR_TYPE)
+            }
+            None => (payload.to_vec(), TxFlags::default()),
+        };
         // The firmware writes the First Frame length as `len & 0xFF` with a
         // literal 0x10 high nibble, so anything above 255 bytes goes out
         // malformed. Refuse it here; the host path handles large sends.
-        if payload.len() > 255 {
-            return Err(IsoTpError::FirmwareFfDlLimit(payload.len()).into());
+        if buf.len() > 255 {
+            return Err(IsoTpError::FirmwareFfDlLimit(buf.len()).into());
         }
-        self.chan.send(self.tx_id, payload)
+        self.chan.send_flags(self.tx_id, &buf, flags)
     }
 
     pub fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
         loop {
             let m = self.chan.read(timeout)?;
             if m.data.len() > 4 && m.data[..4] == self.rx_id.to_wire() {
-                return Ok(m.data[4..].to_vec());
+                let body = &m.data[4..];
+                // With extended addressing the firmware flags the reply with
+                // RxStatus 0x80 and (RE-derived — confirm on the bench) leaves
+                // the address byte at the head of the reassembled payload;
+                // strip it. If the flag is absent, hand back the body as-is.
+                let start = usize::from(
+                    self.ext_addr.is_some()
+                        && m.rx_status.contains(RxStatus::ADDR_TYPE)
+                        && !body.is_empty(),
+                );
+                return Ok(body[start..].to_vec());
             }
             // A frame from some other identifier slipping through means the
             // filter isn't what we think it is; keep waiting rather than

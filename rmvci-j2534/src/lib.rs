@@ -250,6 +250,48 @@ fn with_chan(channel_id: c_ulong, f: impl FnOnce(&mut Slot) -> c_long) -> c_long
     }
 }
 
+/// Shared body for the K-line init IOCTLs (FAST_INIT / FIVE_BAUD_INIT): read
+/// the init message from `input`, run `run`, and write the ECU key bytes back
+/// into the `output` PASSTHRU_MSG.
+///
+/// # Safety
+/// `input`/`output` must each be null or a valid `PASSTHRU_MSG`.
+unsafe fn kline_init(
+    slot: &mut Slot,
+    input: *mut c_void,
+    output: *mut c_void,
+    run: impl FnOnce(&mut RawChannel, &[u8]) -> Result<Vec<u8>, Error>,
+) -> c_long {
+    let inp = input.cast::<PassthruMsg>();
+    if inp.is_null() || unsafe { (*inp).data_size } == 0 {
+        set_err("NULL/empty init message");
+        return ERR_NULL_PARAMETER;
+    }
+    let inp = unsafe { &*inp };
+    let n = (inp.data_size as usize).min(inp.data.len());
+    match run(slot.chan.as_mut().unwrap(), &inp.data[..n]) {
+        Ok(reply) => {
+            let outp = output.cast::<PassthruMsg>();
+            if !outp.is_null() {
+                let o = unsafe { &mut *outp };
+                o.protocol_id = slot.chan.as_ref().unwrap().proto().wire();
+                o.rx_status = 0;
+                o.tx_flags = 0;
+                o.timestamp = 0;
+                let k = reply.len().min(o.data.len());
+                o.data[..k].copy_from_slice(&reply[..k]);
+                o.data_size = k as u32;
+                o.extra_data_index = k as u32;
+            }
+            STATUS_NOERROR
+        }
+        Err(e) => {
+            set_err(format!("init failed: {e}"));
+            ERR_FAILED
+        }
+    }
+}
+
 /// # Safety
 /// Message pointers must be null or valid `PASSTHRU_MSG`s; `filter_id` writable. Pointer validity per SAE J2534-1.
 #[unsafe(no_mangle)]
@@ -493,41 +535,60 @@ pub unsafe extern "system" fn PassThruIoctl(
             }
             STATUS_NOERROR
         }),
+        GET_CONFIG => with_chan(channel_id, |slot| {
+            let list = input.cast::<SConfigList>();
+            if list.is_null() {
+                set_err("NULL SCONFIG_LIST");
+                return ERR_NULL_PARAMETER;
+            }
+            let list = unsafe { &*list };
+            if list.num_of_params > 0 && list.config_ptr.is_null() {
+                set_err("NULL ConfigPtr");
+                return ERR_NULL_PARAMETER;
+            }
+            // GET_CONFIG fills the Value fields of the caller's SCONFIG_LIST
+            // in place; one wire call per parameter (the firmware has no list
+            // form). NOTE: the reply layout is RE-derived, not yet confirmed
+            // on hardware — see inner::parse_get_config.
+            let params = unsafe {
+                std::slice::from_raw_parts_mut(list.config_ptr, list.num_of_params as usize)
+            };
+            for p in params {
+                match slot.chan.as_mut().unwrap().get_config(p.parameter) {
+                    Ok(v) => p.value = v,
+                    Err(e) => {
+                        set_err(format!("get_config({}) failed: {e}", p.parameter));
+                        return code_of(&e);
+                    }
+                }
+            }
+            STATUS_NOERROR
+        }),
+        READ_VBATT => with_chan(channel_id, |slot| {
+            let out = output.cast::<c_ulong>();
+            if out.is_null() {
+                set_err("NULL READ_VBATT output");
+                return ERR_NULL_PARAMETER;
+            }
+            match slot.chan.as_mut().unwrap().read_vbatt() {
+                Ok(mv) => {
+                    unsafe { *out = mv as c_ulong };
+                    STATUS_NOERROR
+                }
+                Err(e) => fail(&e),
+            }
+        }),
         CLEAR_PERIODIC_MSGS => {
             with_chan(channel_id, |slot| match slot.chan.as_mut().unwrap().clear_periodic() {
                 Ok(()) => STATUS_NOERROR,
                 Err(e) => fail(&e),
             })
         }
-        FAST_INIT => with_chan(channel_id, |slot| {
-            let inp = input.cast::<PassthruMsg>();
-            if inp.is_null() || unsafe { (*inp).data_size } == 0 {
-                set_err("NULL/empty FAST_INIT message");
-                return ERR_NULL_PARAMETER;
-            }
-            let inp = unsafe { &*inp };
-            let n = (inp.data_size as usize).min(inp.data.len());
-            match slot.chan.as_mut().unwrap().fast_init(&inp.data[..n]) {
-                Ok(reply) => {
-                    let outp = output.cast::<PassthruMsg>();
-                    if !outp.is_null() {
-                        let o = unsafe { &mut *outp };
-                        o.protocol_id = slot.chan.as_ref().unwrap().proto().wire();
-                        o.rx_status = 0;
-                        o.tx_flags = 0;
-                        o.timestamp = 0;
-                        let k = reply.len().min(o.data.len());
-                        o.data[..k].copy_from_slice(&reply[..k]);
-                        o.data_size = k as u32;
-                        o.extra_data_index = k as u32;
-                    }
-                    STATUS_NOERROR
-                }
-                Err(e) => {
-                    set_err(format!("fast init failed: {e}"));
-                    ERR_FAILED
-                }
-            }
+        FAST_INIT => with_chan(channel_id, |slot| unsafe {
+            kline_init(slot, input, output, |c, init| c.fast_init(init))
+        }),
+        FIVE_BAUD_INIT => with_chan(channel_id, |slot| unsafe {
+            kline_init(slot, input, output, |c, init| c.five_baud_init(init))
         }),
         // Parity with the C shim (and the firmware, where CLEAR_TX_BUFFER is
         // itself a no-op that reports success).
@@ -543,28 +604,85 @@ pub unsafe extern "system" fn PassThruIoctl(
 
 // ---- stubs / informational ---------------------------------------------
 
+/// # Safety
+/// `msg` must be null or a valid `PASSTHRU_MSG`; `msg_id` must be null or
+/// writable. Pointer validity per SAE J2534-1.
 #[unsafe(no_mangle)]
-pub extern "system" fn PassThruStartPeriodicMsg(
-    _channel_id: c_ulong,
-    _msg: *mut PassthruMsg,
-    _msg_id: *mut c_ulong,
-    _time_interval: c_ulong,
+pub unsafe extern "system" fn PassThruStartPeriodicMsg(
+    channel_id: c_ulong,
+    msg: *mut PassthruMsg,
+    msg_id: *mut c_ulong,
+    time_interval: c_ulong,
 ) -> c_long {
-    ERR_NOT_SUPPORTED
+    guard(|| {
+        if msg.is_null() || msg_id.is_null() {
+            set_err("NULL periodic message/id");
+            return ERR_NULL_PARAMETER;
+        }
+        with_chan(channel_id, |slot| {
+            let m = unsafe { &*msg };
+            let n = (m.data_size as usize).min(m.data.len());
+            // The MsgID is host-assigned, like a filter handle; a distinct base
+            // (0x000e7b00) keeps periodic handles from colliding visually with
+            // filter handles (0x000e7a00). StopPeriodicMsg passes it straight
+            // back, so no id map is needed.
+            let wire_id = 0x000e_7b00u32 + (slot.next_id & 0xff);
+            slot.next_id += 1;
+            match slot.chan.as_mut().unwrap().start_periodic(
+                wire_id,
+                m.tx_flags,
+                time_interval as u32,
+                &m.data[..n],
+            ) {
+                Ok(()) => {
+                    unsafe { *msg_id = wire_id as c_ulong };
+                    STATUS_NOERROR
+                }
+                Err(e) => fail(&e),
+            }
+        })
+    })
 }
 
 #[unsafe(no_mangle)]
-pub extern "system" fn PassThruStopPeriodicMsg(_channel_id: c_ulong, _msg_id: c_ulong) -> c_long {
-    ERR_NOT_SUPPORTED
+pub extern "system" fn PassThruStopPeriodicMsg(channel_id: c_ulong, msg_id: c_ulong) -> c_long {
+    guard(|| {
+        with_chan(channel_id, |slot| {
+            match slot.chan.as_mut().unwrap().stop_periodic(msg_id as u32) {
+                Ok(()) => STATUS_NOERROR,
+                Err(e) => {
+                    set_err(format!("no such periodic msg: {e}"));
+                    code_of(&e)
+                }
+            }
+        })
+    })
 }
 
+/// Passthrough to the firmware's SET_PROGRAMMING_VOLTAGE (0x0D). On the
+/// Mini-VCI the firmware stores the value and drives no pin (a no-op that
+/// reports success); cables whose firmware implements the opcode act on it.
 #[unsafe(no_mangle)]
 pub extern "system" fn PassThruSetProgrammingVoltage(
-    _device_id: c_ulong,
-    _pin_number: c_ulong,
-    _voltage: c_ulong,
+    device_id: c_ulong,
+    pin_number: c_ulong,
+    voltage: c_ulong,
 ) -> c_long {
-    ERR_NOT_SUPPORTED
+    guard(|| {
+        let mut slots = SLOTS.lock().unwrap();
+        match slot_from_dev(device_id).and_then(|i| slots[i].as_mut()) {
+            Some(slot) => {
+                match slot.device.set_programming_voltage(pin_number as u32, voltage as u32) {
+                    Ok(()) => STATUS_NOERROR,
+                    Err(e) => fail(&e),
+                }
+            }
+            None => {
+                set_err("invalid device id");
+                ERR_INVALID_DEVICE_ID
+            }
+        }
+    })
 }
 
 /// # Safety

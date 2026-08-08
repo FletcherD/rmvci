@@ -7,9 +7,12 @@ Windows.
 Three API surfaces over one implementation:
 
 - **`rmvci-core`** — a native Rust API: `Device`, typed `Channel<P>`, and
-  ISO 15765-2 both through the firmware and host-side over raw CAN.
+  ISO 15765-2 both through the firmware and host-side over raw CAN — including
+  extended/mixed addressing on both paths.
 - **`rmvci-j2534`** — a `cdylib` exporting the 14 SAE J2534 `PassThru*`
-  functions, so Techstream and other J2534 hosts can load it.
+  functions, so Techstream and other J2534 hosts can load it. Every export the
+  firmware can back is wired through — periodic messages, the config/init/vbatt
+  IOCTLs and programming voltage included (see *J2534 surface* below).
 - **`rmvci-android`** — JNI entry points so an Android app can drive the
   cable, with Java owning the USB permission. *(Hardware-verified on a phone:
   the `prius-hvac-android` app read `21 43` -> `61 43 7b 79` over the real
@@ -23,7 +26,7 @@ hardware.
 
 ```sh
 cargo build --workspace
-cargo test --workspace          # 56 offline tests, no hardware needed
+cargo test --workspace          # 73 offline tests, no hardware needed
 
 # Read the Prius A/C amplifier air-mix servo (7C4, KWP 21 43):
 cargo run -p prius-hvac -- /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
@@ -64,10 +67,49 @@ error messages:
   six-entry table with `id - 1` and no bounds check; recovery needs a port
   reopen (which pulses DTR/RTS and resets the chip). `ProtocolId` is a closed
   enum, so no bad value can reach the wire.
-- **`READ_VBATT` is hardcoded to 12000 mV.** There is no ADC read behind it.
+- **`READ_VBATT` is hardcoded to 12000 mV, and `SetProgrammingVoltage` drives
+  no pin.** Both are wired through faithfully (a real round trip that also
+  proves the cable is alive), so cables whose firmware implements them work —
+  but on the Mini-VCI the battery voltage is a firmware constant and a
+  programming-voltage set is a no-op that reports success. Don't read either as
+  a measurement/effect on this cable.
 - **`BLOCK` filters do nothing.** The firmware accepts and ignores them.
+- **Periodic + extended addressing is inexpressible.** A periodic message is
+  capped at 12 bytes (`N < 13`), which a 4-byte id + 8 data bytes already fills,
+  leaving no room for the address byte.
 - **Reopening a port right after dropping a `Device` fails.** Teardown is
   asynchronous; call `Device::close()` when you intend to reopen.
+
+## J2534 surface
+
+Every `PassThru*` export is implemented as far as the cable's firmware backs
+it — this is a general J2534 driver, not just a Prius reader:
+
+- **Periodic messages** — `PassThruStartPeriodicMsg` / `StopPeriodicMsg`
+  (firmware 0x0F/0x10) and `CLEAR_PERIODIC_MSGS`. The MsgID is host-assigned
+  (like a filter handle), returned in `*pMsgID`.
+- **IOCTLs** — `GET_CONFIG`, `SET_CONFIG`, `READ_VBATT`, `FAST_INIT`,
+  `FIVE_BAUD_INIT`, `CLEAR_PERIODIC_MSGS`, and the buffer/filter clears.
+  (`GET_CONFIG`/`READ_VBATT` reply layouts are RE-derived — see below.)
+- **`SetProgrammingVoltage`** — passthrough to firmware 0x0D (a no-op on the
+  Mini-VCI; real on cables that implement it).
+- **Protocols** — CAN/ISO15765 and K-line (ISO14230 **and** ISO9141, which
+  share the firmware's K-line object; `Channel<Iso9141>` now has the same
+  `write`/`fast_init`/`five_baud_init` surface). J1850 VPW/PWM are reachable
+  only via the raw `RawChannel` path — the firmware objects exist but are
+  unexercised, so there is no typed API and no hardware claim.
+- **Extended/mixed ISO-TP addressing** — on both the firmware path
+  (`FirmwareIsoTp::with_ext_addr`) and the host path
+  (`IsoTpConfig::with_ext_addr`), and via a 5-byte J2534 flow-control filter
+  with `ISO15765_ADDR_TYPE`.
+
+> **Bench-verify pending.** Three wire behaviours are derived from the firmware
+> RE and not yet confirmed on hardware: the `GET_CONFIG`/`READ_VBATT` reply
+> framing (assumed `[ILEN][0x0e][value u32 LE]`), and whether the firmware
+> leaves the extended-addressing byte at the head of the reassembled reply
+> (`FirmwareIsoTp::recv` strips it when RxStatus 0x80 is set). Run
+> `re/bench/isotp_responder_extaddr.py` with the `live_can_extended_addressing`
+> / `live_ioctl_readback` tests to settle them.
 
 ## Which ISO-TP path?
 
@@ -222,6 +264,14 @@ Live tests need the cable; the CAN ones also need the bench fake ECU:
 ```sh
 python3 ../re/bench/isotp_responder.py /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -v &
 RMVCI_PORT=... cargo test --test live live_can -- --ignored --nocapture
+
+# Extended/mixed addressing (settles the RE-only strip-offset question):
+python3 ../re/bench/isotp_responder_extaddr.py -v &
+RMVCI_PORT=... cargo test --test live live_can_extended -- --ignored --nocapture
+
+# Periodic emission, and the GET_CONFIG/READ_VBATT reply layouts:
+RMVCI_PORT=... cargo test --test live live_periodic     -- --ignored --nocapture
+RMVCI_PORT=... cargo test --test live live_ioctl_readback -- --ignored --nocapture
 ```
 
 Fuzzing (the sans-IO layers make this cheap — needs `cargo install cargo-fuzz`

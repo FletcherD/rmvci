@@ -246,3 +246,11 @@ impl Protocol for Iso15765 {
 pub trait CanFramed: Protocol {}
 impl CanFramed for Can {}
 impl CanFramed for Iso15765 {}
+
+/// K-line protocols (ISO9141 / ISO14230). They share one firmware class
+/// object, so message send and both init flavours are identical across the
+/// two. Only ISO14230 is hardware-verified — ISO9141's firmware path exists
+/// but is unexercised on a real ECU.
+pub trait KLine: Protocol {}
+impl KLine for Iso9141 {}
+impl KLine for Iso14230 {}

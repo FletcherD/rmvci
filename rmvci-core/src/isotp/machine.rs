@@ -34,6 +34,17 @@ fn pad(mut frame: Vec<u8>, padding: Option<u8>) -> Vec<u8> {
     frame
 }
 
+/// Start a frame, emitting the extended-addressing byte first when mixed/
+/// extended addressing is in use. Every ISO-TP frame then carries one fewer
+/// data byte (SF ≤ 6, FF 5, CF 6).
+fn start_frame(addr: Option<u8>) -> Vec<u8> {
+    let mut f = Vec::with_capacity(8);
+    if let Some(a) = addr {
+        f.push(a);
+    }
+    f
+}
+
 /// What the transmit driver must do next.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TxAction {
@@ -69,6 +80,8 @@ pub struct TxMachine {
     wft_max: u8,
     n_bs: Duration,
     padding: Option<u8>,
+    /// Extended/mixed-addressing byte, prepended to every frame when set.
+    addr: Option<u8>,
     state: TxState,
 }
 
@@ -79,13 +92,25 @@ impl TxMachine {
         n_bs: Duration,
         wft_max: u8,
     ) -> Result<Self, IsoTpError> {
+        Self::with_addr(payload, padding, n_bs, wft_max, None)
+    }
+
+    pub fn with_addr(
+        payload: &[u8],
+        padding: Option<u8>,
+        n_bs: Duration,
+        wft_max: u8,
+        addr: Option<u8>,
+    ) -> Result<Self, IsoTpError> {
         if payload.is_empty() {
             return Err(IsoTpError::Malformed("empty payload"));
         }
         if payload.len() > MAX_PAYLOAD {
             return Err(IsoTpError::PayloadTooLong(payload.len()));
         }
-        let state = if payload.len() <= 7 { TxState::SingleFrame } else { TxState::FirstFrame };
+        // The address byte costs one data byte, so a single frame holds ≤ 6.
+        let sf_max = 7 - addr.is_some() as usize;
+        let state = if payload.len() <= sf_max { TxState::SingleFrame } else { TxState::FirstFrame };
         Ok(Self {
             payload: payload.to_vec(),
             offset: 0,
@@ -97,6 +122,7 @@ impl TxMachine {
             wft_max,
             n_bs,
             padding,
+            addr,
             state,
         })
     }
@@ -104,7 +130,7 @@ impl TxMachine {
     pub fn next(&mut self, now: Instant) -> Result<TxAction, IsoTpError> {
         match self.state {
             TxState::SingleFrame => {
-                let mut f = Vec::with_capacity(8);
+                let mut f = start_frame(self.addr);
                 f.push(self.payload.len() as u8);
                 f.extend_from_slice(&self.payload);
                 self.state = TxState::Finished;
@@ -112,11 +138,12 @@ impl TxMachine {
             }
             TxState::FirstFrame => {
                 let len = self.payload.len();
-                let mut f = Vec::with_capacity(8);
+                let first = 6 - self.addr.is_some() as usize; // FF data bytes
+                let mut f = start_frame(self.addr);
                 f.push(0x10 | (len >> 8) as u8);
                 f.push(len as u8);
-                f.extend_from_slice(&self.payload[..6]);
-                self.offset = 6;
+                f.extend_from_slice(&self.payload[..first]);
+                self.offset = first;
                 self.sn = 1;
                 self.state = TxState::AwaitFc { deadline: now + self.n_bs };
                 Ok(TxAction::Send(f)) // FF is always full-length
@@ -132,8 +159,9 @@ impl TxMachine {
                 if now < earliest {
                     return Ok(TxAction::WaitUntil(earliest));
                 }
-                let chunk = (self.payload.len() - self.offset).min(7);
-                let mut f = Vec::with_capacity(8);
+                let cf_max = 7 - self.addr.is_some() as usize; // CF data bytes
+                let chunk = (self.payload.len() - self.offset).min(cf_max);
+                let mut f = start_frame(self.addr);
                 f.push(0x20 | self.sn);
                 f.extend_from_slice(&self.payload[self.offset..self.offset + chunk]);
                 self.offset += chunk;
@@ -164,12 +192,21 @@ impl TxMachine {
         if !matches!(self.state, TxState::AwaitFc { .. }) {
             return Ok(());
         }
-        if data.is_empty() || data[0] >> 4 != 0x3 {
+        // In extended addressing the FC frame also leads with the address byte;
+        // ignore frames for a different address, then read the PCI past it.
+        let h = self.addr.is_some() as usize;
+        if let Some(a) = self.addr
+            && data.first() != Some(&a)
+        {
             return Ok(());
         }
-        if data.len() < 3 {
+        if data.len() < h + 1 || data[h] >> 4 != 0x3 {
+            return Ok(());
+        }
+        if data.len() < h + 3 {
             return Err(IsoTpError::Malformed("flow control shorter than 3 bytes"));
         }
+        let data = &data[h..];
         match data[0] & 0x0f {
             0 => {
                 // CTS
@@ -223,16 +260,30 @@ pub struct RxMachine {
     rx_stmin: u8,
     padding: Option<u8>,
     n_cr: Duration,
+    /// Extended/mixed-addressing byte, expected on and prepended to every frame.
+    addr: Option<u8>,
     state: RxState,
 }
 
 impl RxMachine {
     pub fn new(rx_bs: u8, rx_stmin: u8, padding: Option<u8>, n_cr: Duration) -> Self {
-        Self { buf: Vec::new(), ff_dl: 0, rx_bs, rx_stmin, padding, n_cr, state: RxState::Idle }
+        Self::with_addr(rx_bs, rx_stmin, padding, n_cr, None)
+    }
+
+    pub fn with_addr(
+        rx_bs: u8,
+        rx_stmin: u8,
+        padding: Option<u8>,
+        n_cr: Duration,
+        addr: Option<u8>,
+    ) -> Self {
+        Self { buf: Vec::new(), ff_dl: 0, rx_bs, rx_stmin, padding, n_cr, addr, state: RxState::Idle }
     }
 
     fn fc(&self) -> Vec<u8> {
-        pad(vec![0x30, self.rx_bs, self.rx_stmin], self.padding)
+        let mut f = start_frame(self.addr);
+        f.extend_from_slice(&[0x30, self.rx_bs, self.rx_stmin]);
+        pad(f, self.padding)
     }
 
     /// N_Cr enforcement: call periodically while waiting for CFs.
@@ -249,6 +300,19 @@ impl RxMachine {
         if data.is_empty() {
             return Err(IsoTpError::Malformed("empty frame"));
         }
+        // Validate and strip the extended-addressing byte when in use, so the
+        // rest of the parser sees a plain frame. `h` still adjusts the
+        // full-frame length checks (a full ext frame carries one fewer byte).
+        let h = self.addr.is_some() as usize;
+        if let Some(a) = self.addr
+            && data[0] != a
+        {
+            return Err(IsoTpError::Malformed("extended-address mismatch"));
+        }
+        if data.len() < h + 1 {
+            return Err(IsoTpError::Malformed("frame too short for extended address"));
+        }
+        let data = &data[h..];
         match data[0] >> 4 {
             0x0 => {
                 let len = (data[0] & 0x0f) as usize;
@@ -259,16 +323,19 @@ impl RxMachine {
                 Ok(RxEvent::Done(data[1..1 + len].to_vec()))
             }
             0x1 => {
-                if data.len() < 8 {
+                if data.len() < 8 - h {
                     return Err(IsoTpError::Malformed("short first frame"));
                 }
                 let ff_dl = ((data[0] & 0x0f) as usize) << 8 | data[1] as usize;
-                if ff_dl <= 7 {
+                // A payload that would fit in a single frame must not use a
+                // first frame. The single-frame capacity is one byte smaller
+                // under extended addressing (6 vs 7).
+                if ff_dl <= 7 - h {
                     return Err(IsoTpError::Malformed("FF_DL fits in a single frame"));
                 }
                 self.ff_dl = ff_dl;
                 self.buf.clear();
-                self.buf.extend_from_slice(&data[2..8]);
+                self.buf.extend_from_slice(&data[2..8 - h]);
                 self.state = RxState::Receiving {
                     expected_sn: 1,
                     cfs_since_fc: 0,
@@ -286,7 +353,7 @@ impl RxMachine {
                     return Err(IsoTpError::SequenceError { expected: expected_sn, got: sn });
                 }
                 let need = self.ff_dl - self.buf.len();
-                let take = need.min(7).min(data.len() - 1);
+                let take = need.min(7 - h).min(data.len() - 1);
                 self.buf.extend_from_slice(&data[1..1 + take]);
 
                 if self.buf.len() >= self.ff_dl {

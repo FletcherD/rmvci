@@ -150,6 +150,157 @@ fn live_can_firmware_vs_host() {
     println!("both paths byte-identical");
 }
 
+/// Extended/mixed addressing against `re/bench/isotp_responder_extaddr.py`.
+/// This is the experiment that settles the one ext-addr behaviour resting on
+/// RE alone (FINDINGS §10.4): whether the firmware flags the reply with
+/// RxStatus 0x80 and leaves the address byte at the head of the reassembled
+/// payload. The raw probe prints exactly what came back; the FirmwareIsoTp and
+/// host assertions then prove the strip logic is right end to end.
+///
+/// ```sh
+/// python3 re/bench/isotp_responder_extaddr.py -v &
+/// RMVCI_PORT=... cargo test --test live live_can_extended -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the cable + ext-addr responder (set RMVCI_PORT)"]
+fn live_can_extended_addressing() {
+    use rmvci_core::{
+        CanConfig, CanId, FirmwareIsoTp, FlowControlFilter, IsoTp, IsoTpConfig, Iso15765, RxStatus,
+        TxFlags,
+    };
+
+    const ADDR: u8 = 0xf1;
+    let tx = CanId::Std(0x7c4);
+    let rx = CanId::Std(0x7cc);
+    let timeout = Duration::from_secs(3);
+
+    // --- raw probe: show the reply's RxStatus and byte layout directly ---
+    {
+        let dev = open_retrying(&port());
+        let mut ch = dev.connect::<Iso15765>(CanConfig::default()).expect("connect");
+        ch.set_filter(FlowControlFilter::exact(rx, tx).with_ext_addr(ADDR)).expect("ext filter");
+        // Address byte at msg[4], TxFlags ISO15765_ADDR_TYPE.
+        ch.send_flags(tx, &[ADDR, 0x21, 0x43], TxFlags::ISO15765_ADDR_TYPE).expect("send");
+        match ch.read(timeout) {
+            Ok(m) => {
+                let addr_type = m.rx_status.contains(RxStatus::ADDR_TYPE);
+                println!("raw ext-addr reply: rx_status={:?} data={:02x?}", m.rx_status, m.data);
+                println!("  RxStatus ADDR_TYPE (0x80) set: {addr_type}");
+                println!("  byte after CAN id (data[4]): {:#04x}", m.data[4]);
+                println!("  -> if that is {ADDR:#04x}, the firmware keeps the address byte in the payload");
+            }
+            Err(e) => println!("raw ext-addr read failed: {e}"),
+        }
+        drop(ch);
+        dev.close();
+    }
+
+    // --- FirmwareIsoTp with extended addressing (strips per RxStatus) ---
+    {
+        let dev = open_retrying(&port());
+        let mut tp = FirmwareIsoTp::with_ext_addr(&dev, tx, rx, ADDR).expect("fw ext channel");
+        let r = tp.request(&[0x21, 0x43], timeout).expect("21 43 ext");
+        println!("firmware ext-addr 21 43 -> {r:02x?}");
+        assert_eq!(r, [0x61, 0x43, 0x7b, 0x79], "ext-addr reply payload wrong (strip offset?)");
+        drop(tp);
+        dev.close();
+    }
+
+    // --- host path with extended addressing ---
+    {
+        let dev = open_retrying(&port());
+        let mut tp =
+            IsoTp::new(&dev, IsoTpConfig::new(tx, rx).with_ext_addr(ADDR)).expect("host ext channel");
+        let r1 = tp.request(&[0x21, 0x43], timeout).expect("host 21 43 ext");
+        println!("host ext-addr 21 43 -> {r1:02x?}");
+        assert_eq!(r1, [0x61, 0x43, 0x7b, 0x79]);
+        let r2 = tp.request(&[0x21, 0x44], timeout).expect("host 21 44 ext");
+        println!("host ext-addr 21 44 -> {} bytes", r2.len());
+        assert_eq!(&r2[..2], &[0x61, 0x44]);
+        assert_eq!(r2.len(), 40);
+    }
+    println!("extended addressing OK on both paths");
+}
+
+/// Periodic messages (0x0F/0x10) against `re/bench/isotp_responder.py`: start a
+/// periodic `21 43`, confirm the adapter re-emits it (the responder answers
+/// each time), then stop it and confirm the replies cease. A bogus StopPeriodic
+/// id must be rejected with InvalidMsgId.
+///
+/// ```sh
+/// python3 re/bench/isotp_responder.py -v &
+/// RMVCI_PORT=... cargo test --test live live_periodic -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the cable + bench responder (set RMVCI_PORT)"]
+fn live_periodic_emission() {
+    use rmvci_core::{CanConfig, CanId, Can, CanFilter, DeviceStatus, Error};
+
+    let dev = open_retrying(&port());
+    let mut ch = dev.connect::<Can>(CanConfig::default()).expect("connect CAN");
+    ch.set_filter(CanFilter::exact(CanId::Std(0x7cc))).expect("filter 7cc");
+
+    // Single-frame 21 43 as a raw CAN periodic every 200 ms.
+    let msg = [0x00, 0x00, 0x07, 0xc4, 0x02, 0x21, 0x43, 0x00];
+    let periodic_id = 0x000e_7b00;
+    ch.raw().start_periodic(periodic_id, 0, 200, &msg).expect("start periodic");
+
+    // Count responder replies over ~1 s — should be several if it re-emits.
+    let mut replies = 0;
+    let deadline = std::time::Instant::now() + Duration::from_millis(1200);
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(m)) = ch.poll(Duration::from_millis(300))
+            && !m.is_indication()
+            && m.data.len() >= 7
+            && m.data[5] == 0x61
+        {
+            replies += 1;
+        }
+    }
+    println!("periodic 21 43: {replies} replies in ~1.2 s");
+    assert!(replies >= 2, "expected the adapter to re-emit the periodic message");
+
+    ch.raw().stop_periodic(periodic_id).expect("stop periodic");
+
+    // A bogus id is rejected.
+    match ch.raw().stop_periodic(0x000e_7bff) {
+        Err(Error::Rejected { status: DeviceStatus::InvalidMsgId, .. }) => {}
+        other => println!("bogus stop_periodic returned {other:?} (expected InvalidMsgId)"),
+    }
+}
+
+/// Read-back IOCTLs: GET_CONFIG(DATA_RATE) and READ_VBATT. These pin the reply
+/// layouts that are RE-derived and marked unverified in the codec. Prints the
+/// values so the assumed `[ILEN][0x0e][u32 LE]` framing can be confirmed.
+///
+/// ```sh
+/// RMVCI_PORT=... cargo test --test live live_ioctl_readback -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "needs the Mini-VCI cable (set RMVCI_PORT)"]
+fn live_ioctl_readback() {
+    use rmvci_core::{Can, CanConfig};
+
+    let dev = open_retrying(&port());
+    let mut ch = dev.connect::<Can>(CanConfig::default()).expect("connect CAN @ 500k");
+
+    match ch.raw().get_config(0x01) {
+        Ok(v) => {
+            println!("GET_CONFIG(DATA_RATE) -> {v}");
+            println!("  (expect ~500000 if the assumed reply layout is right)");
+        }
+        Err(e) => println!("GET_CONFIG failed: {e} (reply layout may differ — inspect the wire)"),
+    }
+
+    match ch.raw().read_vbatt() {
+        Ok(mv) => {
+            println!("READ_VBATT -> {mv} mV");
+            println!("  (Mini-VCI answers a hardcoded 12000)");
+        }
+        Err(e) => println!("READ_VBATT failed: {e} (reply layout may differ — inspect the wire)"),
+    }
+}
+
 /// Characterise what actually decays when the link sits idle, layer by
 /// layer. This is what decides whether the actor needs a keepalive at all.
 ///

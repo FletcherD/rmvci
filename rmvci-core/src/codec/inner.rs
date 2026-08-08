@@ -122,12 +122,66 @@ pub fn start_filter(
     Ok(v)
 }
 
+/// SET_PROGRAMMING_VOLTAGE (0x0D). Device-scoped (no ProtocolID) — ARGS are the
+/// J2534 pin number then the voltage in mV.
+///
+/// On the Mini-VCI the firmware stores the value and drives no pin (a no-op
+/// that reports success); cables whose firmware implements the opcode act on
+/// it. `PIN_OFF`-style sentinels (`0xffffffff` / `0`) are passed through
+/// unchanged.
+pub fn set_programming_voltage(pin: u32, millivolts: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(11);
+    v.extend_from_slice(&ilen(8));
+    v.push(Cmd::SetProgrammingVoltage as u8);
+    v.extend_from_slice(&u32le(pin));
+    v.extend_from_slice(&u32le(millivolts));
+    v
+}
+
 pub fn stop_filter(proto: ProtocolId, filter_id: u32) -> Vec<u8> {
     let mut v = Vec::with_capacity(15);
     v.extend_from_slice(&ilen(12));
     v.push(Cmd::StopMsgFilter as u8);
     v.extend_from_slice(&u32le(proto.wire()));
     v.extend_from_slice(&u32le(filter_id));
+    v.extend_from_slice(&u32le(0));
+    v
+}
+
+/// START_PERIODIC_MSG (0x0F). `msg_id` is **host-assigned** (like a filter
+/// handle): the caller picks it, the firmware echoes it back and matches it on
+/// STOP_PERIODIC_MSG. `msg` must be under 13 bytes — the firmware's `N < 13`
+/// limit — which fits a CAN periodic (4-byte id + up to 8 data bytes) but
+/// leaves no room for an extended-addressing byte on top of a full frame.
+pub fn start_periodic(
+    proto: ProtocolId,
+    msg_id: u32,
+    txflags: u32,
+    interval_ms: u32,
+    msg: &[u8],
+) -> Result<Vec<u8>, CodecError> {
+    if msg.len() >= 13 {
+        return Err(CodecError::MsgTooLong(msg.len()));
+    }
+    let mut v = Vec::with_capacity(3 + 16 + msg.len());
+    v.extend_from_slice(&ilen(16 + msg.len()));
+    v.push(Cmd::StartPeriodicMsg as u8);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v.extend_from_slice(&u32le(msg_id));
+    v.extend_from_slice(&u32le(txflags));
+    v.extend_from_slice(&u32le(interval_ms));
+    v.extend_from_slice(msg);
+    Ok(v)
+}
+
+/// STOP_PERIODIC_MSG (0x10). Mirrors `stop_filter`: proto, the host-assigned
+/// MsgID, and an unused trailing word.
+pub fn stop_periodic(proto: ProtocolId, msg_id: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(15);
+    v.extend_from_slice(&ilen(12));
+    v.push(Cmd::StopPeriodicMsg as u8);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v.extend_from_slice(&u32le(msg_id));
     v.extend_from_slice(&u32le(0));
     v
 }
@@ -143,6 +197,67 @@ pub fn set_config(proto: ProtocolId, param: u32, value: u32) -> Vec<u8> {
     v.extend_from_slice(&u32le(proto.wire()));
     v.extend_from_slice(&u32le(param));
     v.extend_from_slice(&u32le(value));
+    v
+}
+
+/// IOCTL sub 0x01 = GET_CONFIG. One parameter per call, mirroring SET_CONFIG.
+pub fn get_config(proto: ProtocolId, param: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(12);
+    v.extend_from_slice(&ilen(9));
+    v.push(Cmd::Ioctl as u8);
+    v.push(0x01);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v.extend_from_slice(&u32le(param));
+    v
+}
+
+/// Parse a GET_CONFIG reply into the config value.
+///
+/// **Wire layout unverified.** The firmware RE (§9) confirms the getter exists
+/// and is one-parameter-per-call, but does not pin the reply framing. This
+/// assumes the value trails the IOCTL command echo
+/// (`[ILEN][00][0x0e][value u32 LE]`, analogous to the K-line init reply's
+/// length-driven tail). Confirm against the live cable — read back DATA_RATE
+/// (0x01) and compare — before trusting it.
+pub fn parse_get_config(inner: &[u8]) -> Result<u32, CodecError> {
+    if inner.len() < 7 || inner[2] != Cmd::Ioctl as u8 {
+        return Err(CodecError::MalformedReply("not a get-config reply"));
+    }
+    Ok(u32::from_le_bytes(inner[3..7].try_into().unwrap()))
+}
+
+/// IOCTL sub 0x03 = READ_VBATT. Same shape as CLEAR_PERIODIC_MSGS.
+pub fn read_vbatt(proto: ProtocolId) -> Vec<u8> {
+    let mut v = Vec::with_capacity(8);
+    v.extend_from_slice(&ilen(5));
+    v.push(Cmd::Ioctl as u8);
+    v.push(0x03);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v
+}
+
+/// Parse a READ_VBATT reply into millivolts.
+///
+/// **Wire layout unverified**, same assumption as [`parse_get_config`]: the
+/// value trails the IOCTL command echo. On the Mini-VCI the firmware answers a
+/// hardcoded 12000 mV (no ADC); other cables return a real measurement. Confirm
+/// the layout against the live cable before trusting it.
+pub fn parse_vbatt(inner: &[u8]) -> Result<u32, CodecError> {
+    if inner.len() < 7 || inner[2] != Cmd::Ioctl as u8 {
+        return Err(CodecError::MalformedReply("not a read-vbatt reply"));
+    }
+    Ok(u32::from_le_bytes(inner[3..7].try_into().unwrap()))
+}
+
+/// IOCTL sub 0x04 = FIVE_BAUD_INIT (K-line slow init). Same shape as
+/// [`fast_init`], different sub-function.
+pub fn five_baud_init(proto: ProtocolId, init: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(8 + init.len());
+    v.extend_from_slice(&ilen(5 + init.len()));
+    v.push(Cmd::Ioctl as u8);
+    v.push(0x04);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v.extend_from_slice(init);
     v
 }
 

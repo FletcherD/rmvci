@@ -2,6 +2,7 @@
 //! devices. The shim's slot table and factory hook are process-global, so
 //! everything runs in one sequential #[test].
 
+use core::ffi::c_ulong;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -96,6 +97,33 @@ fn main_device_steps() -> Vec<Step> {
         v
     };
     steps.push(Step::exchange(enc(&inner::read_poll(ProtocolId::Iso15765)), enc(&read_reply)));
+
+    // StartPeriodicMsg: host-assigned id 0x000e7b02 (next_id is 2 after the
+    // one filter), then StopPeriodicMsg with the same id.
+    let periodic_msg = [0x00, 0x00, 0x07, 0xc4, 0x3e, 0x00];
+    steps.push(Step::exchange(
+        enc(&inner::start_periodic(ProtocolId::Iso15765, 0x000e_7b02, 0, 1000, &periodic_msg)
+            .unwrap()),
+        status_reply(0x0f, 0x00),
+    ));
+    steps.push(Step::exchange(
+        enc(&inner::stop_periodic(ProtocolId::Iso15765, 0x000e_7b02)),
+        status_reply(0x10, 0x00),
+    ));
+
+    // GET_CONFIG(0x1e) -> value 8 (assumed reply layout).
+    steps.push(Step::exchange(enc(&inner::get_config(ProtocolId::Iso15765, 0x1e)), {
+        enc(&[0x05, 0x00, 0x0e, 0x08, 0x00, 0x00, 0x00])
+    }));
+    // READ_VBATT -> 12000 mV.
+    steps.push(Step::exchange(enc(&inner::read_vbatt(ProtocolId::Iso15765)), {
+        enc(&[0x05, 0x00, 0x0e, 0xe0, 0x2e, 0x00, 0x00])
+    }));
+    // SetProgrammingVoltage(pin 1, 5000 mV) — device-scoped passthrough.
+    steps.push(Step::exchange(
+        enc(&inner::set_programming_voltage(1, 5000)),
+        status_reply(0x0d, 0x00),
+    ));
 
     // StopMsgFilter, Disconnect, and the close-time session teardown.
     steps.push(Step::exchange(
@@ -238,6 +266,46 @@ fn shim_end_to_end() {
         assert_eq!(&rmsg.data[..8], &[0x00, 0x00, 0x07, 0xcc, 0x61, 0x43, 0x7b, 0x79]);
         assert_eq!(rmsg.protocol_id, 6);
 
+        // --- periodic messages: id is written back, stop takes it verbatim ---
+        let pmsg = boxed_msg(&[0x00, 0x00, 0x07, 0xc4, 0x3e, 0x00], 0);
+        let mut msg_id = 0;
+        assert_eq!(
+            rmvci_j2534::PassThruStartPeriodicMsg(ch_id, Box::into_raw(pmsg), &mut msg_id, 1000),
+            STATUS_NOERROR
+        );
+        assert_eq!(msg_id, 0x000e_7b02);
+        assert_eq!(rmvci_j2534::PassThruStopPeriodicMsg(ch_id, msg_id), STATUS_NOERROR);
+
+        // --- GET_CONFIG writes the value back into the caller's list ---
+        let mut gcfgs = [SConfig { parameter: 0x1e, value: 0 }];
+        let mut glist = SConfigList { num_of_params: 1, config_ptr: gcfgs.as_mut_ptr() };
+        assert_eq!(
+            rmvci_j2534::PassThruIoctl(
+                ch_id,
+                GET_CONFIG as _,
+                (&raw mut glist).cast(),
+                std::ptr::null_mut()
+            ),
+            STATUS_NOERROR
+        );
+        assert_eq!(gcfgs[0].value, 8);
+
+        // --- READ_VBATT writes millivolts to the output ---
+        let mut vbatt: c_ulong = 0;
+        assert_eq!(
+            rmvci_j2534::PassThruIoctl(
+                ch_id,
+                READ_VBATT as _,
+                std::ptr::null_mut(),
+                (&raw mut vbatt).cast()
+            ),
+            STATUS_NOERROR
+        );
+        assert_eq!(vbatt, 12000);
+
+        // --- SetProgrammingVoltage is a device-scoped passthrough now ---
+        assert_eq!(rmvci_j2534::PassThruSetProgrammingVoltage(dev_id, 1, 5000), STATUS_NOERROR);
+
         // --- stop filter, disconnect, close ---
         assert_eq!(rmvci_j2534::PassThruStopMsgFilter(ch_id, filter_id), STATUS_NOERROR);
         assert_eq!(rmvci_j2534::PassThruDisconnect(ch_id), STATUS_NOERROR);
@@ -258,8 +326,9 @@ fn shim_end_to_end() {
             assert_eq!(rmvci_j2534::PassThruClose(id), STATUS_NOERROR);
         }
 
-        // --- stubs stay stubs ---
-        assert_eq!(rmvci_j2534::PassThruStopPeriodicMsg(0x100, 1), ERR_NOT_SUPPORTED);
-        assert_eq!(rmvci_j2534::PassThruSetProgrammingVoltage(1, 15, 0), ERR_NOT_SUPPORTED);
+        // --- with no device/channel open, the (now implemented) periodic and
+        // voltage exports report the right "nothing there" errors ---
+        assert_eq!(rmvci_j2534::PassThruStopPeriodicMsg(0x100, 1), ERR_INVALID_CHANNEL_ID);
+        assert_eq!(rmvci_j2534::PassThruSetProgrammingVoltage(1, 15, 0), ERR_INVALID_DEVICE_ID);
     }
 }
