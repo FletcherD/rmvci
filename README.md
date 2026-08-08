@@ -240,7 +240,8 @@ rmvci-core/src/
   session/     port-owning actor, handshake, Device, RawChannel, Channel<P>
   isotp/       sans-IO Tx/Rx machines + the two ISO-TP clients
 rmvci-j2534/   the 14 PassThru exports (desktop only — nothing loads J2534 on Android)
-rmvci-android/ JNI entry points for an Android app (compiles for aarch64, untested on a device)
+rmvci-android/ JNI entry points for an Android app (compiles for aarch64, untested on a
+               device — see rmvci-android/BRINGUP.md for the on-device test plan)
 examples/prius-hvac/
 ```
 

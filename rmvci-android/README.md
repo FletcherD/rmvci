@@ -3,6 +3,9 @@
 JNI bindings so an Android app can drive the Mini-VCI through `rmvci-core`.
 
 > **Status: compiles for `aarch64-linux-android`; never run on a device.**
+> To get it onto hardware, follow [`BRINGUP.md`](BRINGUP.md) — it has the
+> test plan, the measured tooling inventory, byte-exact fixtures for a
+> no-USB first test, and the traps already paid for.
 > Every layer underneath — codec, session, channels, both ISO-TP paths — is
 > hardware-verified on desktop. This JNI boundary is not. Treat the first
 > device run as debugging, not confirmation.
@@ -48,9 +51,10 @@ rustup target add aarch64-linux-android armv7-linux-androideabi \
 cargo ndk -t arm64-v8a -t armeabi-v7a -o ../app/src/main/jniLibs build --release
 ```
 
-Needs the Android NDK (`ANDROID_NDK_HOME`). Without it, `cargo check --target
-aarch64-linux-android` still validates the code — that is what has been run
-here.
+Needs the Android NDK; there is one at `~/Android/Sdk/ndk/29.0.14206865` on
+the development machine, but `cargo-ndk` is not installed and no NDK build
+has been run. What *has* been run is `cargo check --target
+aarch64-linux-android`, which validates the code without linking.
 
 ## Kotlin side
 
@@ -119,7 +123,8 @@ when {
 
 ## What is not done
 
-- No `cargo-ndk` build has been run here (no NDK on the development machine).
+- No `cargo-ndk` build has been run (the NDK is present; `cargo-ndk` is not
+  installed). See [`BRINGUP.md`](BRINGUP.md) for the full tooling inventory.
 - The latency-timer control transfer in `JniTransport::optimize_latency` is
   written against `UsbDeviceConnection.controlTransfer` but unverified; if it
   fails the driver logs and continues at the 16 ms default.
