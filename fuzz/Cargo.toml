@@ -38,3 +38,10 @@ path = "fuzz_targets/fuzz_isotp_rx.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "fuzz_isotp_rx_extaddr"
+path = "fuzz_targets/fuzz_isotp_rx_extaddr.rs"
+test = false
+doc = false
+bench = false

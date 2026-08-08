@@ -288,7 +288,8 @@ and a current nightly):
 
 ```sh
 cargo +nightly fuzz run fuzz_deframe -- -max_total_time=60
-# targets: fuzz_deframe, fuzz_decrypt, fuzz_inner_parse, fuzz_isotp_rx
+# targets: fuzz_deframe, fuzz_decrypt, fuzz_inner_parse, fuzz_isotp_rx,
+#          fuzz_isotp_rx_extaddr
 ```
 
 ## Layout
