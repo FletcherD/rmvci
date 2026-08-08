@@ -69,7 +69,17 @@ pub struct JniTransport {
     /// Optional `UsbDeviceConnection`, used only for the latency-timer
     /// control transfer, which `UsbSerialPort` does not expose.
     connection: Option<GlobalRef>,
+    /// Bytes already read from Java but not yet handed to the caller.
+    /// `usb-serial-for-android`'s `read` refuses a destination smaller than
+    /// the USB endpoint's max packet size, so we always read into a
+    /// packet-sized scratch and stash any surplus here.
+    rxbuf: Vec<u8>,
 }
+
+/// Scratch size for the Java `read`. Must be at least the FT232R bulk-in max
+/// packet size (64 B) or `FtdiSerialPort.read` throws "Read buffer too small";
+/// a little larger cuts USB round trips.
+const READ_SCRATCH: usize = 512;
 
 impl JniTransport {
     /// `port` is a `com.hoho.android.usbserial.driver.UsbSerialPort` that is
@@ -77,7 +87,7 @@ impl JniTransport {
     /// `android.hardware.usb.UsbDeviceConnection` it was opened with; pass it
     /// to make [`Transport::optimize_latency`] work.
     pub fn new(vm: JavaVM, port: GlobalRef, connection: Option<GlobalRef>) -> Self {
-        Self { vm, port, connection }
+        Self { vm, port, connection, rxbuf: Vec::new() }
     }
 
     /// An environment for *this* thread. See the module note on threading.
@@ -91,33 +101,72 @@ impl Transport for JniTransport {
         let mut env = self.env()?;
         let arr = env.byte_array_from_slice(buf).map_err(|e| jerr(e, "write: alloc"))?;
         // void write(byte[] src, int timeout)
-        env.call_method(&self.port, "write", "([BI)V", &[JValue::Object(&arr), JValue::Int(2000)])
-            .map_err(|e| jerr(e, "write"))?;
-        Ok(())
+        match env.call_method(
+            &self.port,
+            "write",
+            "([BI)V",
+            &[JValue::Object(&arr), JValue::Int(2000)],
+        ) {
+            Ok(_) => Ok(()),
+            // e.g. the app closed the port mid-teardown: leave no pending
+            // exception on this (daemon) thread, or its return to the JVM
+            // crashes the whole process instead of surfacing an Err.
+            Err(e) => {
+                let _ = env.exception_clear();
+                Err(jerr(e, "write"))
+            }
+        }
     }
 
     fn read(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, TransportError> {
+        // Serve leftovers from a previous oversized read first.
+        if !self.rxbuf.is_empty() {
+            let n = self.rxbuf.len().min(buf.len());
+            buf[..n].copy_from_slice(&self.rxbuf[..n]);
+            self.rxbuf.drain(..n);
+            return Ok(n);
+        }
+
         let mut env = self.env()?;
-        let len = buf.len() as i32;
-        // Java's byte is signed; the memory layout matches Rust's u8 exactly.
+        // Always hand Java a full-packet scratch: FtdiSerialPort.read rejects a
+        // destination below the endpoint's max packet size. Java's byte is
+        // signed; the memory layout matches Rust's u8 exactly.
+        let cap = buf.len().max(READ_SCRATCH);
         let arr: JPrimitiveArray<i8> =
-            env.new_byte_array(len).map_err(|e| jerr(e, "read: alloc"))?;
+            env.new_byte_array(cap as i32).map_err(|e| jerr(e, "read: alloc"))?;
         let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
         // int read(byte[] dest, int timeout) — bytes read, 0 on timeout.
-        let n = env
+        let n = match env
             .call_method(&self.port, "read", "([BI)I", &[JValue::Object(&arr), JValue::Int(ms)])
             .and_then(|v| v.i())
-            .map_err(|e| jerr(e, "read"))?;
+        {
+            Ok(n) => n,
+            Err(e) => {
+                // Leave no pending exception on the thread, or the next
+                // unrelated JNI call (or the return to Java) fails/crashes.
+                let _ = env.exception_clear();
+                return Err(jerr(e, "read"));
+            }
+        };
         if n <= 0 {
             return Ok(0);
         }
-        let n = (n as usize).min(buf.len());
-        let dst = unsafe { std::slice::from_raw_parts_mut(buf.as_mut_ptr().cast::<i8>(), n) };
-        env.get_byte_array_region(&arr, 0, dst).map_err(|e| jerr(e, "read: copy"))?;
-        Ok(n)
+        let n = n as usize;
+        let mut got = vec![0i8; n];
+        env.get_byte_array_region(&arr, 0, &mut got).map_err(|e| jerr(e, "read: copy"))?;
+        let got: &[u8] = unsafe { std::slice::from_raw_parts(got.as_ptr().cast::<u8>(), n) };
+
+        let take = n.min(buf.len());
+        buf[..take].copy_from_slice(&got[..take]);
+        if n > take {
+            self.rxbuf.extend_from_slice(&got[take..]);
+        }
+        Ok(take)
     }
 
     fn purge_rx(&mut self) -> Result<(), TransportError> {
+        // Drop any buffered surplus too, or a resync would replay stale bytes.
+        self.rxbuf.clear();
         let mut env = self.env()?;
         // void purgeHwBuffers(boolean purgeRead, boolean purgeWrite)
         match env.call_method(
@@ -142,8 +191,11 @@ impl Transport for JniTransport {
     fn set_modem(&mut self, dtr: bool, rts: bool) -> Result<(), TransportError> {
         let mut env = self.env()?;
         for (method, value) in [("setDTR", dtr), ("setRTS", rts)] {
-            env.call_method(&self.port, method, "(Z)V", &[JValue::Bool(value as u8)])
-                .map_err(|e| jerr(e, method))?;
+            if let Err(e) = env.call_method(&self.port, method, "(Z)V", &[JValue::Bool(value as u8)])
+            {
+                let _ = env.exception_clear();
+                return Err(jerr(e, method));
+            }
         }
         Ok(())
     }

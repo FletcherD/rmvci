@@ -2,13 +2,11 @@
 
 JNI bindings so an Android app can drive the Mini-VCI through `rmvci-core`.
 
-> **Status: compiles for `aarch64-linux-android`; never run on a device.**
-> To get it onto hardware, follow [`BRINGUP.md`](BRINGUP.md) — it has the
-> test plan, the measured tooling inventory, byte-exact fixtures for a
-> no-USB first test, and the traps already paid for.
-> Every layer underneath — codec, session, channels, both ISO-TP paths — is
-> hardware-verified on desktop. This JNI boundary is not. Treat the first
-> device run as debugging, not confirmation.
+> **Status: hardware-verified on a device.** A rooted moto g fast (Android 11)
+> drove the real Mini-VCI through this JNI path to the bench ECU —
+> `21 43` -> `61 43 7b 79` — via the [`prius-hvac-android`](../../prius-hvac-android)
+> app. [`BRINGUP.md`](BRINGUP.md) has the full account, including the four
+> boundary bugs the first device run flushed out (all fixed).
 
 ## How it fits together
 

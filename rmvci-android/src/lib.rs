@@ -33,9 +33,10 @@
 //! `#[unsafe(no_mangle)]` functions to match (`.` becomes `_`), or switch to
 //! `RegisterNatives`, which sidesteps name mangling entirely.
 //!
-//! **Status: compiles for `aarch64-linux-android`, never run on a device.**
-//! The layers underneath are hardware-verified on desktop; this JNI boundary
-//! is not.
+//! **Status: hardware-verified on a device.** A rooted moto g fast (Android
+//! 11) drove the real Mini-VCI through this JNI path to the bench ECU —
+//! `21 43` -> `61 43 7b 79` — via the `prius-hvac-android` app. Bring-up found
+//! four boundary bugs now fixed here and in [`JniTransport`] (see BRINGUP.md).
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -196,9 +197,16 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_close(_env: JNIEnv, _class: JClass, 
         return;
     }
     let session = unsafe { Box::from_raw(handle as *mut Session) };
-    // Blocks until the actor has torn the session down and released the
-    // port, so the app can immediately reopen.
-    session.device.close();
+    let Session { device, tp } = *session;
+    // Drop the cached ISO-TP channel *first*. `Device` is `Clone` and a
+    // channel owns its own clone of the actor's sender, so as long as `tp`
+    // lives the actor never sees the session go away — `device.close()` would
+    // then block for its full timeout. Dropping `tp` here also runs its
+    // best-effort per-channel disconnect while the actor is still up.
+    drop(tp);
+    // Now the last handle drops inside close(): the actor tears the session
+    // down and releases the port promptly, so the app can immediately reopen.
+    device.close();
 }
 
 #[unsafe(no_mangle)]

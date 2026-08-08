@@ -7,18 +7,23 @@ getting it onto hardware.
 
 ## Status in one line
 
-The Rust side is written and cross-compiles for `aarch64-linux-android`. It
-has **never executed on a device or an emulator.** Nothing below the JNI
-boundary is in doubt — the codec, session, channels and both ISO-TP paths are
-hardware-verified on desktop against the real cable — but the JNI boundary
-itself is unexercised.
+**Done — verified on a device (2026-08-07).** A rooted moto g fast (Android 11)
+ran both tiers: Tier 1 (fake port, no USB) returned `J2534 MINIV1.03`, and
+Tier 2 drove the real Mini-VCI through this JNI path to the bench ECU,
+`21 43` -> `61 43 7b 79`, with a clean ~17 ms close that is reopen-safe.
 
-| | verified how |
-|---|---|
-| codec, session, channels, ISO-TP | 56 offline tests + live runs against the cable and bench ECU |
-| `JniTransport`, `rmvci-android` exports | `cargo check --target aarch64-linux-android` and symbol names only |
+The first device run was debugging, exactly as warned: it flushed out **four
+boundary bugs**, all now fixed. None were below the JNI boundary — the codec,
+session, channels and ISO-TP were already correct.
 
-Treat the first device run as debugging, not as confirmation.
+| bug | where | fix |
+|---|---|---|
+| USB permission always read back "denied" | app | `PendingIntent` must be **mutable** — the system fills `EXTRA_PERMISSION_GRANTED` into it, which `FLAG_IMMUTABLE` forbids |
+| "Read buffer too small" on the first handshake read | `JniTransport::read` | `usb-serial-for-android` rejects a destination below the endpoint packet size; read into a 512 B scratch and buffer the surplus for later reads |
+| process crash (SIG 9) on close | `JniTransport` write/read/set_modem | clear the pending JNI exception on the error path, or a failed teardown write left it pending and killed the daemon thread |
+| ~5 s stall on close | `rmvci-android` close | `Device` is `Clone` and the cached channel holds its own sender clone; drop the ISO-TP channel **before** `device.close()` so the actor sees the session end at once (5 s -> 17 ms) |
+
+The tiers below remain the record of how it was brought up.
 
 ## You must build an APK. There is no shortcut.
 

@@ -11,8 +11,9 @@ Three API surfaces over one implementation:
 - **`rmvci-j2534`** — a `cdylib` exporting the 14 SAE J2534 `PassThru*`
   functions, so Techstream and other J2534 hosts can load it.
 - **`rmvci-android`** — JNI entry points so an Android app can drive the
-  cable, with Java owning the USB permission. *(Compiles for Android; not yet
-  run on a device.)*
+  cable, with Java owning the USB permission. *(Hardware-verified on a phone:
+  the `prius-hvac-android` app read `21 43` -> `61 43 7b 79` over the real
+  Mini-VCI.)*
 
 Everything the driver does on the wire is derived from reverse engineering
 the cable's own firmware (`../re/FINDINGS.md`) and is validated against
