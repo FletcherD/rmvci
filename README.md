@@ -102,6 +102,13 @@ it — this is a general J2534 driver, not just a Prius reader:
   (`FirmwareIsoTp::with_ext_addr`) and the host path
   (`IsoTpConfig::with_ext_addr`), and via a 5-byte J2534 flow-control filter
   with `ISO15765_ADDR_TYPE`.
+- **Host-path ISO15765 channel** — connect an ISO15765 channel with the vendor
+  `RMVCI_HOST_ISOTP` ConnectFlag (0x8000_0000) to run ISO-TP host-side over raw
+  CAN instead of the firmware. Slower per frame, but it segments payloads beyond
+  255 bytes correctly and honors the ECU's BS/STmin — the two things the
+  firmware path cannot do (see *Which ISO-TP path?*). The default (flag unset)
+  stays the fast firmware path. NB: the cable has a single global RX owner, so a
+  channel is one or the other, never both at once.
 
 > **Bench-verify pending.** Three wire behaviours are derived from the firmware
 > RE and not yet confirmed on hardware: the `GET_CONFIG`/`READ_VBATT` reply
@@ -126,6 +133,8 @@ it — this is a general J2534 driver, not just a Prius reader:
 Both implement `UdsTransport`, so switching is one line. Use the firmware
 path for short requests (the `21 43` case); use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
+Through the J2534 shim the choice is the `RMVCI_HOST_ISOTP` ConnectFlag; in the
+native API it is `FirmwareIsoTp` vs `IsoTp`.
 
 Worth being explicit about the reassembly row, because it is the one failure
 the driver cannot defend against: on the firmware path the adapter does the

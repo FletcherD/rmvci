@@ -98,6 +98,36 @@ impl IsoTp {
         Ok(Self { chan, cfg })
     }
 
+    /// Connect the raw-CAN channel **without** installing a filter yet, for
+    /// callers whose endpoints arrive after the connect (the J2534 shim, which
+    /// learns `rx`/`tx` from a later flow-control filter). Call
+    /// [`IsoTp::set_endpoints`] before `send`/`recv`.
+    pub fn connect_deferred(dev: &Device, cfg: IsoTpConfig, can: CanConfig) -> Result<Self, Error> {
+        let chan = dev.connect::<Can>(can)?;
+        Ok(Self { chan, cfg })
+    }
+
+    /// Set (or change) the endpoints and reinstall the exact rx filter. This is
+    /// how the deferred-connect path becomes usable, and how a channel is
+    /// repointed at a different ECU.
+    pub fn set_endpoints(
+        &mut self,
+        tx_id: CanId,
+        rx_id: CanId,
+        ext_addr: Option<u8>,
+    ) -> Result<(), Error> {
+        self.cfg.tx_id = tx_id;
+        self.cfg.rx_id = rx_id;
+        self.cfg.ext_addr = ext_addr;
+        self.chan.set_filter(CanFilter::exact(rx_id))
+    }
+
+    /// The response identifier this client reassembles from (for the shim to
+    /// prefix onto a J2534 read message).
+    pub fn rx_id(&self) -> CanId {
+        self.cfg.rx_id
+    }
+
     /// Frames from the response identifier, indications skipped.
     ///
     /// One poll yields at most one message — READ_MSG returns a single

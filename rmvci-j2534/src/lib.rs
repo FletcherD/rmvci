@@ -14,7 +14,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use rmvci_core::{CodecError, Device, DeviceConfig, Error, ProtocolId, RawChannel};
+use rmvci_core::{
+    CanConfig, CanId, CodecError, Device, DeviceConfig, Error, IsoTp, IsoTpConfig, ProtocolId,
+    RawChannel,
+};
 
 pub mod consts;
 use consts::*;
@@ -50,6 +53,10 @@ const MAX_SLOTS: usize = 4;
 struct Slot {
     device: Device,
     chan: Option<RawChannel>,
+    /// Set instead of `chan` when the channel was opened with
+    /// `RMVCI_HOST_ISOTP`: ISO15765 done host-side over raw CAN (protocol 5).
+    /// The two are mutually exclusive — one channel per slot.
+    host: Option<IsoTp>,
     next_id: u32,
 }
 
@@ -170,7 +177,7 @@ pub unsafe extern "system" fn PassThruOpen(name: *const c_void, device_id: *mut 
                 return ERR_DEVICE_NOT_CONNECTED;
             }
         };
-        slots[idx] = Some(Slot { device, chan: None, next_id: 1 });
+        slots[idx] = Some(Slot { device, chan: None, host: None, next_id: 1 });
         unsafe { *device_id = (idx + 1) as c_ulong };
         STATUS_NOERROR
     })
@@ -214,16 +221,36 @@ pub unsafe extern "system" fn PassThruConnect(
             );
             return ERR_INVALID_PROTOCOL_ID;
         };
+        let flags = flags as u32;
+        let host_mode = flags & RMVCI_HOST_ISOTP != 0;
         let mut slots = SLOTS.lock().unwrap();
         let Some(slot) = slot_from_dev(device_id).and_then(|i| slots[i].as_mut()) else {
             set_err("invalid device id");
             return ERR_INVALID_DEVICE_ID;
         };
-        // One channel per device slot: an existing channel is disconnected
-        // first (the C shim silently overwrote its bookkeeping and leaked
-        // the old channel in the firmware).
+        // One channel per device slot: any existing channel (raw or host) is
+        // dropped first (the C shim silently overwrote its bookkeeping and
+        // leaked the old channel in the firmware).
         slot.chan = None;
-        match slot.device.connect_raw(proto, flags as u32, baud_rate as u32) {
+        slot.host = None;
+
+        // Host-path ISO15765: run ISO-TP host-side over raw CAN (protocol 5).
+        // Only meaningful for ISO15765; the vendor bit is stripped either way.
+        if host_mode && proto == ProtocolId::Iso15765 {
+            let can = CanConfig { bitrate: baud_rate as u32, flags: flags & !RMVCI_HOST_ISOTP };
+            // Endpoints arrive later via the flow-control filter.
+            let cfg = IsoTpConfig::new(CanId::Std(0), CanId::Std(0));
+            return match IsoTp::connect_deferred(&slot.device, cfg, can) {
+                Ok(tp) => {
+                    slot.host = Some(tp);
+                    unsafe { *channel_id = (slot_from_dev(device_id).unwrap() + 0x100) as c_ulong };
+                    STATUS_NOERROR
+                }
+                Err(e) => fail(&e),
+            };
+        }
+
+        match slot.device.connect_raw(proto, flags & !RMVCI_HOST_ISOTP, baud_rate as u32) {
             Ok(chan) => {
                 slot.chan = Some(chan);
                 unsafe { *channel_id = (slot_from_dev(device_id).unwrap() + 0x100) as c_ulong };
@@ -238,14 +265,15 @@ pub unsafe extern "system" fn PassThruConnect(
 pub extern "system" fn PassThruDisconnect(channel_id: c_ulong) -> c_long {
     guard(|| {
         let mut slots = SLOTS.lock().unwrap();
-        let chan =
-            slot_from_ch(channel_id).and_then(|i| slots[i].as_mut()).and_then(|s| s.chan.take());
-        match chan {
-            Some(chan) => {
-                drop(chan); // 0x08 on the wire; the session stays up
+        let slot = slot_from_ch(channel_id).and_then(|i| slots[i].as_mut());
+        match slot {
+            Some(slot) if slot.chan.is_some() || slot.host.is_some() => {
+                // 0x08 on the wire for either channel kind; the session stays up.
+                drop(slot.chan.take());
+                drop(slot.host.take());
                 STATUS_NOERROR
             }
-            None => {
+            _ => {
                 set_err("invalid channel id");
                 ERR_INVALID_CHANNEL_ID
             }
@@ -262,6 +290,17 @@ fn with_chan(channel_id: c_ulong, f: impl FnOnce(&mut Slot) -> c_long) -> c_long
             ERR_INVALID_CHANNEL_ID
         }
     }
+}
+
+/// Run `f` against a host-path ISO-TP channel. Returns `Some(code)` when the
+/// channel is host-mode (handled), `None` when it is not — so callers fall
+/// through to the firmware/raw path.
+fn with_host(channel_id: c_ulong, f: impl FnOnce(&mut IsoTp) -> c_long) -> Option<c_long> {
+    let mut slots = SLOTS.lock().unwrap();
+    slot_from_ch(channel_id)
+        .and_then(|i| slots[i].as_mut())
+        .and_then(|slot| slot.host.as_mut())
+        .map(f)
 }
 
 /// Shared body for the K-line init IOCTLs (FAST_INIT / FIVE_BAUD_INIT): read
@@ -338,6 +377,37 @@ pub unsafe extern "system" fn PassThruStartMsgFilter(
             return ERR_INVALID_MSG;
         }
 
+        // Host-path ISO15765: the flow-control filter carries the endpoints
+        // (pattern = rx id, flow = tx id), which we hand to the host client.
+        if let Some(code) = with_host(channel_id, |tp| {
+            if ftype != FLOW_CONTROL_FILTER {
+                set_err("host-path ISO15765 needs a FLOW_CONTROL filter");
+                return ERR_INVALID_MSG;
+            }
+            let pattern = unsafe { &*pattern_msg };
+            let flow = unsafe { &*flow_control_msg }; // non-null: checked for FC above
+            if pattern.data_size < 4 || flow.data_size < 4 {
+                set_err("filter identifier shorter than 4 bytes");
+                return ERR_INVALID_MSG;
+            }
+            let ext29 = flow.tx_flags & CAN_29BIT_ID != 0;
+            let rx = CanId::from_wire(pattern.data[..4].try_into().unwrap(), ext29);
+            let tx = CanId::from_wire(flow.data[..4].try_into().unwrap(), ext29);
+            let ext_addr = (flow.tx_flags & ISO15765_ADDR_TYPE != 0
+                && flow.data_size >= 5)
+                .then_some(flow.data[4]);
+            match tp.set_endpoints(tx, rx, ext_addr) {
+                Ok(()) => {
+                    // One filter per host channel; a fixed handle is enough.
+                    unsafe { *filter_id = 0x000e_7c00 };
+                    STATUS_NOERROR
+                }
+                Err(e) => fail(&e),
+            }
+        }) {
+            return code;
+        }
+
         with_chan(channel_id, |slot| {
             let chan = slot.chan.as_mut().unwrap();
             let mask = unsafe { &*mask_msg };
@@ -390,6 +460,11 @@ pub unsafe extern "system" fn PassThruStartMsgFilter(
 #[unsafe(no_mangle)]
 pub extern "system" fn PassThruStopMsgFilter(channel_id: c_ulong, filter_id: c_ulong) -> c_long {
     guard(|| {
+        // A host-path channel has one implicit filter; stopping it is a no-op
+        // (the endpoints persist until the channel is reconfigured or dropped).
+        if let Some(code) = with_host(channel_id, |_| STATUS_NOERROR) {
+            return code;
+        }
         with_chan(channel_id, |slot| {
             match slot.chan.as_mut().unwrap().stop_filter(filter_id as u32) {
                 Ok(()) => STATUS_NOERROR,
@@ -415,6 +490,33 @@ pub unsafe extern "system" fn PassThruWriteMsgs(
         if msg.is_null() || num_msgs.is_null() || unsafe { *num_msgs } == 0 {
             set_err("NULL/empty msg");
             return ERR_NULL_PARAMETER;
+        }
+        // Host-path ISO15765: each message is [4-byte id][ISO-TP payload]; the
+        // host client segments it (correct FF_DL, honored BS/STmin) to the tx
+        // id set by the flow-control filter.
+        if let Some(code) = with_host(channel_id, |tp| {
+            let want = unsafe { *num_msgs } as usize;
+            let msgs = unsafe { std::slice::from_raw_parts(msg, want) };
+            for (sent, m) in msgs.iter().enumerate() {
+                let size = (m.data_size as usize).min(m.data.len());
+                if size < 4 {
+                    unsafe { *num_msgs = sent as c_ulong };
+                    set_err("ISO15765 message shorter than a 4-byte id");
+                    return ERR_INVALID_MSG;
+                }
+                if let Err(e) = tp.send(&m.data[4..size]) {
+                    unsafe { *num_msgs = sent as c_ulong };
+                    set_err(format!("host write rejected: {e}"));
+                    return match e {
+                        Error::Codec(_) | Error::IsoTp(_) => ERR_INVALID_MSG,
+                        other => code_of(&other),
+                    };
+                }
+            }
+            unsafe { *num_msgs = want as c_ulong };
+            STATUS_NOERROR
+        }) {
+            return code;
         }
         with_chan(channel_id, |slot| {
             let chan = slot.chan.as_mut().unwrap();
@@ -457,6 +559,50 @@ pub unsafe extern "system" fn PassThruReadMsgs(
         if msg.is_null() || num_msgs.is_null() || unsafe { *num_msgs } == 0 {
             set_err("NULL/empty msg");
             return ERR_NULL_PARAMETER;
+        }
+        // Host-path ISO15765: reassemble whole messages and hand them back as
+        // [4-byte rx id][payload], matching the firmware path's framing.
+        if let Some(code) = with_host(channel_id, |tp| {
+            let want = unsafe { *num_msgs } as usize;
+            let out = unsafe { std::slice::from_raw_parts_mut(msg, want) };
+            #[allow(clippy::useless_conversion)]
+            let timeout_ms: u64 = timeout.max(1).into();
+            let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+            let rx_wire = tp.rx_id().to_wire();
+            let mut got = 0usize;
+            while got < want {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                match tp.recv(remaining) {
+                    Ok(payload) => {
+                        let o = &mut out[got];
+                        let n = (4 + payload.len()).min(o.data.len());
+                        o.data[..4.min(n)].copy_from_slice(&rx_wire[..4.min(n)]);
+                        if n > 4 {
+                            o.data[4..n].copy_from_slice(&payload[..n - 4]);
+                        }
+                        o.protocol_id = ProtocolId::Iso15765.wire();
+                        o.rx_status = 0;
+                        o.tx_flags = 0;
+                        o.timestamp = timestamp_micros();
+                        o.data_size = n as u32;
+                        o.extra_data_index = n as u32;
+                        got += 1;
+                    }
+                    Err(Error::Timeout(_)) => break,
+                    Err(e) => {
+                        unsafe { *num_msgs = got as c_ulong };
+                        return fail(&e);
+                    }
+                }
+            }
+            unsafe { *num_msgs = got as c_ulong };
+            if got == 0 {
+                set_err("no message");
+                return ERR_BUFFER_EMPTY;
+            }
+            STATUS_NOERROR
+        }) {
+            return code;
         }
         with_chan(channel_id, |slot| {
             let chan = slot.chan.as_mut().unwrap();

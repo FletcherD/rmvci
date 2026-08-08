@@ -40,6 +40,13 @@ impl CanId {
         }
     }
 
+    /// Build from 4 big-endian identifier bytes (the `PASSTHRU_MSG.Data[0..4]`
+    /// convention). `ext` selects 29-bit; otherwise the low 11 bits are kept.
+    pub fn from_wire(bytes: [u8; 4], ext: bool) -> Self {
+        let v = u32::from_be_bytes(bytes);
+        if ext { Self::Ext(v & 0x1fff_ffff) } else { Self::Std((v & 0x7ff) as u16) }
+    }
+
     pub fn is_ext(self) -> bool {
         matches!(self, Self::Ext(_))
     }

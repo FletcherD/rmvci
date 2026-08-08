@@ -34,6 +34,14 @@ pub const ISO15765_FRAME_PAD: u32 = 0x0040;
 pub const ISO15765_ADDR_TYPE: u32 = 0x0080;
 pub const CAN_29BIT_ID: u32 = 0x0100;
 
+/// Vendor ConnectFlag (rMVCI-specific, top bit — outside the SAE-defined
+/// range): open an ISO15765 channel that runs ISO-TP **host-side** over raw CAN
+/// (protocol 5) instead of the cable's firmware ISO-TP. Slower per frame, but
+/// segments payloads beyond 255 bytes correctly and honors the ECU's flow
+/// control (BS/STmin) — which the firmware path cannot. Stripped before the
+/// flags reach the wire.
+pub const RMVCI_HOST_ISOTP: u32 = 0x8000_0000;
+
 // Error codes
 pub const STATUS_NOERROR: c_long = 0x00;
 pub const ERR_NOT_SUPPORTED: c_long = 0x01;

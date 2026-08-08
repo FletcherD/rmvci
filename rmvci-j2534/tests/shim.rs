@@ -138,16 +138,105 @@ fn main_device_steps() -> Vec<Step> {
     steps
 }
 
+/// A read-poll exchange delivering one CAN message.
+fn poll_delivers(proto: ProtocolId, rx_status: u32, data: &[u8]) -> Step {
+    let mut reply = Vec::new();
+    reply.extend_from_slice(&((9 + data.len()) as u16).to_le_bytes());
+    reply.push(0x09);
+    reply.extend_from_slice(&rx_status.to_le_bytes());
+    reply.extend_from_slice(&[0; 4]);
+    reply.extend_from_slice(data);
+    Step::exchange(enc(&inner::read_poll(proto)), enc(&reply))
+}
+
+/// Script for a **host-path** ISO15765 channel (protocol 5 + host ISO-TP
+/// machines): connect CAN, the endpoint filter, a single-frame `21 43` round
+/// trip, and a 260-byte write that the firmware path could never segment
+/// (FF + FC + consecutive frames) — the whole point of the host path.
+fn host_device_steps() -> Vec<Step> {
+    const TX: [u8; 4] = [0x00, 0x00, 0x07, 0xc4];
+    const RX: [u8; 4] = [0x00, 0x00, 0x07, 0xcc];
+    let mut steps = handshake_steps();
+
+    // Connect proto 5 (the vendor host-isotp flag is stripped -> flags 0).
+    steps.push(Step::exchange(enc(&inner::connect(ProtocolId::Can, 0, 500_000)), status_reply(0x07, 0x00)));
+    // set_endpoints installs an exact PASS filter on rx (7cc); first id 0x000e7a00.
+    steps.push(Step::exchange(
+        enc(&inner::start_filter(ProtocolId::Can, 0x000e_7a00, 1, &[0xff; 4], &RX, None, 4).unwrap()),
+        status_reply(0x0b, 0x00),
+    ));
+
+    // Small write 21 43 (single frame, padded to 8).
+    steps.push(Step::exchange(
+        enc(&inner::write_msg(ProtocolId::Can, 0, &{
+            let mut m = TX.to_vec();
+            m.extend_from_slice(&[0x02, 0x21, 0x43, 0, 0, 0, 0, 0]);
+            m
+        })
+        .unwrap()),
+        status_reply(0x0a, 0x00),
+    ));
+    steps.push(poll_delivers(ProtocolId::Can, 0, &{
+        let mut m = RX.to_vec();
+        m.extend_from_slice(&[0x04, 0x61, 0x43, 0x7b, 0x79, 0, 0, 0]);
+        m
+    }));
+
+    // Large write: 260 bytes -> First Frame + Flow Control + Consecutive Frames.
+    let payload: Vec<u8> = (0..260u16).map(|i| i as u8).collect();
+    steps.push(Step::exchange(
+        enc(&inner::write_msg(ProtocolId::Can, 0, &{
+            let mut m = TX.to_vec();
+            m.push(0x10 | (payload.len() >> 8) as u8);
+            m.push(payload.len() as u8);
+            m.extend_from_slice(&payload[..6]);
+            m
+        })
+        .unwrap()),
+        status_reply(0x0a, 0x00),
+    ));
+    // ECU flow control: CTS, BS 0, STmin 0.
+    steps.push(poll_delivers(ProtocolId::Can, 0, &{
+        let mut m = RX.to_vec();
+        m.extend_from_slice(&[0x30, 0, 0, 0, 0, 0, 0, 0]);
+        m
+    }));
+    let (mut off, mut sn) = (6usize, 1u8);
+    while off < payload.len() {
+        let take = (payload.len() - off).min(7);
+        steps.push(Step::exchange(
+            enc(&inner::write_msg(ProtocolId::Can, 0, &{
+                let mut m = TX.to_vec();
+                m.push(0x20 | (sn & 0x0f));
+                m.extend_from_slice(&payload[off..off + take]);
+                m.resize(4 + 8, 0); // pad the CAN frame to 8 data bytes
+                m
+            })
+            .unwrap()),
+            status_reply(0x0a, 0x00),
+        ));
+        off += take;
+        sn = (sn + 1) & 0x0f;
+    }
+
+    // Disconnect (proto 5, on channel drop) + session close on device drop.
+    steps.push(Step::exchange(enc(&inner::disconnect(ProtocolId::Can)), status_reply(0x08, 0x00)));
+    steps.push(Step::exchange(enc(&inner::session_close()), Vec::new()));
+    steps
+}
+
 #[test]
 fn shim_end_to_end() {
     let opened = Arc::new(AtomicUsize::new(0));
     let opened_in_factory = Arc::clone(&opened);
     _set_device_factory(Box::new(move |_port| {
         let n = opened_in_factory.fetch_add(1, Ordering::SeqCst);
-        // Device #0 gets the fully-scripted scenario; later ones (slot
-        // exhaustion test) only need to open and close.
+        // Device #0 gets the firmware scenario, device #1 the host-path
+        // scenario; later ones (slot exhaustion test) only open and close.
         let steps = if n == 0 {
             main_device_steps()
+        } else if n == 1 {
+            host_device_steps()
         } else {
             let mut s = handshake_steps();
             s.push(Step::reply_any(Vec::new())); // session close on drop
@@ -316,6 +405,56 @@ fn shim_end_to_end() {
         assert_eq!(rmvci_j2534::PassThruDisconnect(ch_id), ERR_INVALID_CHANNEL_ID);
         assert_eq!(rmvci_j2534::PassThruClose(dev_id), STATUS_NOERROR);
         assert_eq!(rmvci_j2534::PassThruClose(dev_id), ERR_INVALID_DEVICE_ID);
+
+        // --- host-path ISO15765 (device #1): the vendor RMVCI_HOST_ISOTP flag
+        // opens a raw-CAN channel running host-side ISO-TP, so a >255-byte
+        // write segments correctly instead of failing FirmwareFfDlLimit ---
+        let mut hdev = 0;
+        assert_eq!(rmvci_j2534::PassThruOpen(std::ptr::null(), &mut hdev), STATUS_NOERROR);
+        let mut hch = 0;
+        assert_eq!(
+            rmvci_j2534::PassThruConnect(hdev, ISO15765 as _, RMVCI_HOST_ISOTP as _, 500_000, &mut hch),
+            STATUS_NOERROR
+        );
+        // Flow-control filter carries the endpoints: pattern = rx (7cc), flow = tx (7c4).
+        let hmask = boxed_msg(&[0xff, 0xff, 0xff, 0xff], 0);
+        let hpat = boxed_msg(&[0x00, 0x00, 0x07, 0xcc], 0);
+        let hflow = boxed_msg(&[0x00, 0x00, 0x07, 0xc4], 0);
+        let mut hfilter = 0;
+        assert_eq!(
+            rmvci_j2534::PassThruStartMsgFilter(
+                hch,
+                FLOW_CONTROL_FILTER as u64 as _,
+                Box::into_raw(hmask),
+                Box::into_raw(hpat),
+                Box::into_raw(hflow),
+                &mut hfilter,
+            ),
+            STATUS_NOERROR
+        );
+
+        // Small round trip through the host path.
+        let hw = boxed_msg(&[0x00, 0x00, 0x07, 0xc4, 0x21, 0x43], 0);
+        let mut hn = 1u64 as _;
+        assert_eq!(rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(hw), &mut hn, 0), STATUS_NOERROR);
+        let mut hr: Box<PassthruMsg> = Box::new(std::mem::zeroed());
+        let mut hn = 1u64 as _;
+        assert_eq!(rmvci_j2534::PassThruReadMsgs(hch, &mut *hr, &mut hn, 1000), STATUS_NOERROR);
+        assert_eq!(&hr.data[..8], &[0x00, 0x00, 0x07, 0xcc, 0x61, 0x43, 0x7b, 0x79]);
+
+        // 260-byte write: firmware path would return FirmwareFfDlLimit; the
+        // host path segments it and succeeds.
+        let mut big = boxed_msg(&[], 0);
+        big.data[..4].copy_from_slice(&[0x00, 0x00, 0x07, 0xc4]);
+        for (i, b) in big.data[4..264].iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        big.data_size = 264;
+        let mut hn = 1u64 as _;
+        assert_eq!(rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(big), &mut hn, 0), STATUS_NOERROR);
+
+        assert_eq!(rmvci_j2534::PassThruDisconnect(hch), STATUS_NOERROR);
+        assert_eq!(rmvci_j2534::PassThruClose(hdev), STATUS_NOERROR);
 
         // --- slot exhaustion: 4 devices fit, the 5th is refused ---
         let mut ids = Vec::new();
