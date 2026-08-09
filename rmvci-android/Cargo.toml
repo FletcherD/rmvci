@@ -13,5 +13,8 @@ crate-type = ["cdylib"]
 # No default features: `serial` would pull in serialport, which is useless
 # on Android — the bytes come from Java.
 rmvci-core = { path = "../rmvci-core", default-features = false, features = ["jni-transport"] }
+# The TCP bridge: serve the cable's JniTransport to a remote rmvci over the
+# network. Lib-only dependency (no serial/usb backends pulled in on Android).
+rmvci-net = { path = "../rmvci-net" }
 jni = "0.21"
 tracing = { version = "0.1", default-features = false, features = ["std"] }

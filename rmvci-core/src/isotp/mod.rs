@@ -25,7 +25,44 @@ use crate::types::{RxMsg, RxStatus, TxFlags};
 
 use machine::{RxEvent, RxMachine, TxAction, TxMachine};
 
+/// A KWP2000/UDS negative response of the form `7F <sid> 78`
+/// (requestCorrectlyReceived-**ResponsePending**): the ECU acknowledges the
+/// request immediately and then sends the real response a beat later. A
+/// [`UdsTransport::request`] must never hand this frame back as the answer —
+/// it keeps reading until the true response arrives.
+pub(crate) fn is_response_pending(resp: &[u8]) -> bool {
+    matches!(resp, [0x7f, _, 0x78, ..])
+}
+
+/// Upper bound on consecutive `7F .. 78` pending frames tolerated before a
+/// `request` gives up and returns the pending frame (so the caller still sees
+/// the NRC rather than blocking forever on a stuck ECU).
+pub(crate) const MAX_RESPONSE_PENDING: u32 = 30;
+
+/// Drive one request/response to completion: `recv` is called repeatedly,
+/// transparently swallowing up to [`MAX_RESPONSE_PENDING`] consecutive
+/// `7F .. 78` responsePending frames, and the first non-pending response (or
+/// the last pending one, if the ECU never finishes) is returned. The caller
+/// performs the send before invoking this. `recv` must yield the bare service
+/// bytes — K-line strips its header first.
+pub(crate) fn drain_pending(
+    mut recv: impl FnMut() -> Result<Vec<u8>, Error>,
+) -> Result<Vec<u8>, Error> {
+    let mut pending = 0;
+    loop {
+        let resp = recv()?;
+        if is_response_pending(&resp) && pending < MAX_RESPONSE_PENDING {
+            pending += 1;
+            continue;
+        }
+        return Ok(resp);
+    }
+}
+
 /// One request/response exchange — the shape UDS/KWP diagnostics need.
+///
+/// Implementations transparently consume `7F .. 78` responsePending frames
+/// (see [`is_response_pending`]) and return the final application response.
 pub trait UdsTransport {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error>;
 }
@@ -217,7 +254,7 @@ impl IsoTp {
     /// the whole multi-frame request, which ISO 15765-2 does not allow.
     pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         self.send(req)?;
-        self.recv(timeout)
+        drain_pending(|| self.recv(timeout))
     }
 }
 
@@ -326,12 +363,56 @@ impl FirmwareIsoTp {
 
     pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         self.send(req)?;
-        self.recv(timeout)
+        drain_pending(|| self.recv(timeout))
     }
 }
 
 impl UdsTransport for FirmwareIsoTp {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         FirmwareIsoTp::request(self, req, timeout)
+    }
+}
+
+#[cfg(test)]
+mod pending_tests {
+    use super::*;
+
+    #[test]
+    fn is_response_pending_matches_only_7f_xx_78() {
+        assert!(is_response_pending(&[0x7f, 0x21, 0x78]));
+        assert!(is_response_pending(&[0x7f, 0x30, 0x78, 0x00]));
+        assert!(!is_response_pending(&[0x61, 0x0d, 0x09]));
+        assert!(!is_response_pending(&[0x7f, 0x21, 0x31])); // a real NRC
+        assert!(!is_response_pending(&[0x7f, 0x78])); // too short
+    }
+
+    #[test]
+    fn drain_swallows_pending_then_returns_real() {
+        let mut frames = std::collections::VecDeque::from(vec![
+            vec![0x7f, 0x21, 0x78],
+            vec![0x7f, 0x21, 0x78],
+            vec![0x61, 0x0d, 0x09],
+        ]);
+        let got = drain_pending(|| Ok(frames.pop_front().unwrap())).unwrap();
+        assert_eq!(got, vec![0x61, 0x0d, 0x09]);
+        assert!(frames.is_empty());
+    }
+
+    #[test]
+    fn drain_gives_up_after_the_cap_and_returns_the_pending() {
+        let mut calls = 0u32;
+        let got = drain_pending(|| {
+            calls += 1;
+            Ok(vec![0x7f, 0x21, 0x78])
+        })
+        .unwrap();
+        assert!(is_response_pending(&got));
+        assert_eq!(calls, MAX_RESPONSE_PENDING + 1); // capped, not infinite
+    }
+
+    #[test]
+    fn drain_propagates_recv_error() {
+        let err = drain_pending(|| Err(Error::BufferEmpty));
+        assert!(err.is_err());
     }
 }

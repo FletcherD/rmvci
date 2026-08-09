@@ -1,0 +1,40 @@
+[package]
+name = "rmvci-net"
+description = "Network bridge for the Mini-VCI: drive the cable from a PC while it is physically plugged into a remote host (e.g. a rooted Android phone at the car) running rmvci-bridge"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# The phone-side `rmvci-bridge` binary owns the real cable, so it needs the
+# concrete backends from rmvci-core (USB via nusb, and/or ftdi_sio serial).
+bridge = ["rmvci-core/serial", "rmvci-core/usb", "dep:tracing-subscriber"]
+# The PC-side demo clients `rmvci-remote` and `prius-kline`.
+client = ["dep:tracing-subscriber", "dep:rmvci-diag"]
+
+[dependencies]
+# default-features off: the library half (TcpTransport + serve) only needs the
+# always-compiled Transport trait; backends are pulled in by the `bridge`
+# feature for the bridge binary alone.
+rmvci-core = { path = "../rmvci-core", default-features = false }
+rmvci-diag = { path = "../rmvci-diag", optional = true }
+tracing = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+
+[[bin]]
+name = "rmvci-bridge"
+required-features = ["bridge"]
+
+[[bin]]
+name = "rmvci-remote"
+required-features = ["client"]
+
+[[bin]]
+name = "prius-kline"
+required-features = ["client"]
+
+[[bin]]
+name = "diag-cmd"
+required-features = ["client"]

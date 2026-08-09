@@ -17,6 +17,10 @@ Three API surfaces over one implementation:
   cable, with Java owning the USB permission. *(Hardware-verified on a phone:
   the `prius-hvac-android` app read `21 43` -> `61 43 7b 79` over the real
   Mini-VCI.)*
+- **`rmvci-net`** — a separate TCP-bridge crate: `TcpTransport` (PC side) forwards
+  the five `Transport` primitives to a remote `rmvci-bridge` (phone side) that owns
+  the real cable, so a PC can drive a cable plugged into a rooted Android phone at
+  the car. Only raw bytes cross the wire. See [`rmvci-net/README.md`](rmvci-net/README.md).
 
 Everything the driver does on the wire is derived from reverse engineering
 the cable's own firmware (`../re/FINDINGS.md`) and is validated against

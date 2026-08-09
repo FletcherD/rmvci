@@ -42,7 +42,9 @@
 //! `21 43` -> `61 43 7b 79` — via the `prius-hvac-android` app. Bring-up found
 //! four boundary bugs now fixed here and in [`JniTransport`] (see BRINGUP.md).
 
-use std::sync::Mutex;
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use jni::JNIEnv;
@@ -233,6 +235,111 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_close(_env: JNIEnv, _class: JClass, 
     // Now the last handle drops inside close(): the actor tears the session
     // down and releases the port promptly, so the app can immediately reopen.
     device.close();
+}
+
+/// A running TCP bridge: the accept loop watches `stop` between connections.
+struct Bridge {
+    stop: Arc<AtomicBool>,
+}
+
+/// Start the network bridge: bind `tcp_port` and serve the cable's byte
+/// transport to a remote `rmvci` (`rmvci-net`'s `TcpTransport`). Returns a
+/// handle for [`stopBridge`](Java_dev_rmvci_Rmvci_stopBridge), or 0 on failure
+/// (then read [`lastError`](Java_dev_rmvci_Rmvci_lastError)).
+///
+/// Unlike [`open`](Java_dev_rmvci_Rmvci_open) this does **not** drive the
+/// cable itself — it hands the same `JniTransport` (Java `UsbSerialPort` + its
+/// `UsbDeviceConnection`) to `serve`, so the PC runs the whole driver stack
+/// remotely. Keep `port`/`connection` open on the Java side for the bridge's
+/// lifetime; closing the port is how [`stopBridge`] unblocks an in-flight read.
+///
+/// Needs the app to hold `android.permission.INTERNET` (Android gates the
+/// AF_INET socket at the kernel via the `inet` group, native code included).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_rmvci_Rmvci_startBridge(
+    env: JNIEnv,
+    _class: JClass,
+    port: JObject,
+    connection: JObject,
+    tcp_port: jint,
+) -> jlong {
+    let vm = match env.get_java_vm() {
+        Ok(vm) => vm,
+        Err(e) => {
+            set_err(format!("get_java_vm: {e}"));
+            return 0;
+        }
+    };
+    let port = match env.new_global_ref(port) {
+        Ok(r) => r,
+        Err(e) => {
+            set_err(format!("global ref for port: {e}"));
+            return 0;
+        }
+    };
+    let connection = env.new_global_ref(connection).ok();
+
+    let listener = match TcpListener::bind(("0.0.0.0", tcp_port as u16)) {
+        Ok(l) => l,
+        Err(e) => {
+            set_err(format!("bind 0.0.0.0:{tcp_port}: {e} (is INTERNET permission set?)"));
+            return 0;
+        }
+    };
+    // Poll accept so the stop flag is observed while no client is connected.
+    if let Err(e) = listener.set_nonblocking(true) {
+        set_err(format!("set_nonblocking: {e}"));
+        return 0;
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let io = JniTransport::new(vm, port, connection);
+    std::thread::spawn(move || bridge_loop(listener, io, stop_thread));
+    Box::into_raw(Box::new(Bridge { stop })) as jlong
+}
+
+/// Accept one client at a time (the cable has a single RX owner) and serve it
+/// until it disconnects, reusing the one `JniTransport` across connections.
+fn bridge_loop(listener: TcpListener, mut io: JniTransport, stop: Arc<AtomicBool>) {
+    tracing::info!("bridge accept loop started");
+    while !stop.load(Ordering::Relaxed) {
+        match listener.accept() {
+            Ok((stream, peer)) => {
+                tracing::info!(?peer, "bridge client connected");
+                // The loop polls non-blocking; a served connection uses
+                // ordinary blocking I/O.
+                if let Err(e) = stream.set_nonblocking(false) {
+                    tracing::warn!(error = %e, "set_nonblocking(false)");
+                    continue;
+                }
+                if let Err(e) = rmvci_net::serve_connection(stream, &mut io) {
+                    tracing::warn!(error = %e, "bridge client session ended");
+                }
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "bridge accept failed");
+                break;
+            }
+        }
+    }
+    tracing::info!("bridge accept loop stopped");
+    // `io` (the JniTransport) drops here, releasing its global refs.
+}
+
+/// Signal the bridge to stop. The accept thread observes the flag within its
+/// poll interval and exits; a client mid-request unblocks when the Java side
+/// closes the `UsbSerialPort`. Does not join (the caller is the UI thread).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_rmvci_Rmvci_stopBridge(_env: JNIEnv, _class: JClass, handle: jlong) {
+    if handle == 0 {
+        return;
+    }
+    let bridge = unsafe { Box::from_raw(handle as *mut Bridge) };
+    bridge.stop.store(true, Ordering::Relaxed);
 }
 
 #[unsafe(no_mangle)]

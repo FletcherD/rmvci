@@ -14,12 +14,14 @@
 pub mod codec;
 pub mod error;
 pub mod isotp;
+pub mod kline;
 pub mod session;
 pub mod transport;
 pub mod types;
 
 pub use error::{CodecError, Error, InvalidProtocolId, IsoTpError, TransportError};
 pub use isotp::{FirmwareIsoTp, IsoTp, IsoTpConfig, UdsTransport};
+pub use kline::{KLINE_TIMING, KLineEcu};
 pub use session::protocol::{
     Can, CanConfig, CanFilter, CanId, FlowControlFilter, Iso9141, Iso14230, Iso15765, KLine,
     KLineConfig, KLineFilter, Protocol,

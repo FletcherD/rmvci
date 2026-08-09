@@ -1,0 +1,19 @@
+[package]
+name = "rmvci-diag"
+description = "Transport-agnostic KWP2000 (ISO 14230-3) and UDS (ISO 14229-1) diagnostic clients with Toyota extensions, over any rmvci UdsTransport (K-line or ISO-TP)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Only the UdsTransport seam + Error are needed; no backend features.
+rmvci-core = { path = "../rmvci-core", default-features = false }
+# Standard KWP2000 / UDS service-id and NRC definitions (MIT/Apache).
+automotive_diag = { version = "0.1.28", default-features = false, features = ["kwp2000", "uds", "obd2"] }
+thiserror = "2"
+
+[dev-dependencies]
+# Doctests reference Device::open (the serial backend); enabling it here keeps
+# the examples realistic without forcing a backend on downstream crates.
+rmvci-core = { path = "../rmvci-core", features = ["serial"] }
