@@ -271,6 +271,18 @@ pub fn clear_periodic(proto: ProtocolId) -> Vec<u8> {
     v
 }
 
+/// IOCTL sub 0x08 = CLEAR_RX_BUFFER. The genuine vendor DLL sends this right
+/// before FAST_INIT on K-line; the cable acts on it, so it is NOT the firmware
+/// no-op we had assumed.
+pub fn clear_rx(proto: ProtocolId) -> Vec<u8> {
+    let mut v = Vec::with_capacity(8);
+    v.extend_from_slice(&ilen(5));
+    v.push(Cmd::Ioctl as u8);
+    v.push(0x08);
+    v.extend_from_slice(&u32le(proto.wire()));
+    v
+}
+
 /// IOCTL sub 0x05 = FAST_INIT (K-line).
 pub fn fast_init(proto: ProtocolId, init: &[u8]) -> Vec<u8> {
     let mut v = Vec::with_capacity(8 + init.len());

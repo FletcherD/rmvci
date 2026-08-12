@@ -18,12 +18,35 @@
 //! Response-pending (`7F .. 78`) frames are consumed transparently, as with the
 //! ISO-TP transports.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::{CodecError, Error};
-use crate::isotp::{UdsTransport, drain_pending};
+use crate::isotp::{UdsTransport, is_response_pending};
 use crate::session::protocol::{Iso14230, KLineConfig, KLineFilter};
 use crate::session::{Channel, Device};
+
+/// Hard ceiling on how long a single request will keep swallowing
+/// `7F .. 78` responsePending frames before giving up. Some Toyota K-line LIDs
+/// (e.g. a not-fitted sensor, or the DTC read on the A/C amp) stream pending
+/// *forever* and never deliver the real reply; without a ceiling `request`
+/// would block indefinitely. Observed real storms run ~13 s, so 20 s is safe.
+const MAX_PENDING_TIME: Duration = Duration::from_secs(20);
+
+/// After a request that only ever got responsePending (the ECU streamed `78`s
+/// then went quiet), poll this many leftover frames out of the adapter's RX
+/// ring so they can't desync the *next* request. Each poll waits this long for
+/// a straggler; a longer straggler is harmless (the next request's own drain
+/// swallows it).
+const FLUSH_MAX_FRAMES: usize = 64;
+const FLUSH_POLL: Duration = Duration::from_millis(400);
+
+/// Once an ECU has started streaming responsePending, its inter-frame gap can
+/// grow (measured up to ~2.5 s late in an A/C-amp storm). Reads *after* the
+/// first pending frame wait at least this long, so the drain doesn't declare
+/// the ECU "quiet" mid-storm — bailing early leaves the ECU busy and it ignores
+/// the next request until re-init. Only reached during a pending-storm, so it
+/// never slows a normal read (the real reply arrives well within it).
+const PENDING_READ_TIMEOUT: Duration = Duration::from_millis(3000);
 
 /// The 12 `SET_CONFIG` (param, value) pairs the vendor tool (Techstream) sends
 /// to bring up an ISO 14230 channel, applied by [`KLineEcu::connect`] before
@@ -100,10 +123,18 @@ impl KLineEcu {
     /// FAST_INIT — call [`KLineEcu::fast_init`] next (kept separate so the
     /// caller sees the key bytes).
     pub fn connect(dev: &Device, ecu: u8) -> Result<Self, Error> {
+        Self::connect_with(dev, ecu, &KLINE_TIMING)
+    }
+
+    /// Like [`KLineEcu::connect`] but with a caller-supplied SET_CONFIG timing
+    /// profile instead of the fixed [`KLINE_TIMING`]. Used to probe whether the
+    /// Mini-VCI firmware honours the J2534 K-line timing params at all, and to
+    /// apply a per-ECU CommInfoIso profile (baud + W/P) if it does.
+    pub fn connect_with(dev: &Device, ecu: u8, timing: &[(u32, u32)]) -> Result<Self, Error> {
         let mut chan = dev.connect::<Iso14230>(KLineConfig::default())?;
         // Response headers are 0x8x (0x80|len); keep the top two bits.
         chan.set_filter(KLineFilter { mask: 0xc0, pattern: 0x80 })?;
-        for (param, value) in KLINE_TIMING {
+        for &(param, value) in timing {
             chan.set_config(param, value)?;
         }
         chan.clear_periodic()?;
@@ -168,16 +199,108 @@ fn strip_header(frame: &[u8]) -> Result<&[u8], Error> {
     Ok(&frame[hdr..end])
 }
 
+impl KLineEcu {
+    /// startDiagnosticSession (`10 <mode>`). Session-gated ECUs (ABS, Body,
+    /// Gateway, EMPS, Transmission on the NHW20) answer only their ID read
+    /// (`21 00`) until this succeeds; the A/C amp and Immobiliser do not need
+    /// it. Mode `0x81` is the one those ECUs accept. Keep the session alive with
+    /// periodic [`KLineEcu::tester_present`] (ISO 14230 P3 expires it otherwise).
+    pub fn start_session(&mut self, mode: u8) -> Result<Vec<u8>, Error> {
+        self.request(&[0x10, mode], Duration::from_millis(1500))
+    }
+
+    /// testerPresent (`3E 01`, response required) — the KWP2000 keepalive that
+    /// stops a diagnostic session timing out between reads.
+    pub fn tester_present(&mut self) -> Result<Vec<u8>, Error> {
+        self.request(&[0x3e, 0x01], Duration::from_millis(1000))
+    }
+
+    /// Poll leftover frames out of the adapter's RX ring after a pending-storm,
+    /// so they don't land on the next request. Returns how many were flushed.
+    fn flush_ring(&mut self) -> usize {
+        let mut n = 0;
+        while n < FLUSH_MAX_FRAMES {
+            match self.chan.poll(FLUSH_POLL) {
+                Ok(Some(_)) => n += 1,
+                _ => break, // ring empty (None) or a read error — done
+            }
+        }
+        n
+    }
+
+    /// Best-effort re-FAST_INIT after an event that can leave the ECU **wedged**
+    /// — it then ignores every subsequent request until re-initialised. Two such
+    /// events, both observed live: a `7F .. 78` responsePending storm (A/C amp
+    /// `21 52` / DTC read), and a **silent LID** (an unsupported LID the ECU just
+    /// drops). Flush the RX ring first so stale frames don't land on the next
+    /// request. This mirrors Techstream, which re-inits after any no-answer LID
+    /// before moving to the next one.
+    fn reinit(&mut self, ctx: &'static str) {
+        let flushed = self.flush_ring();
+        match self.fast_init() {
+            Ok(_) => tracing::debug!(flushed, ctx, "K-line ECU re-initialised"),
+            Err(e) => tracing::warn!(flushed, ctx, error = %e, "K-line re-init failed"),
+        }
+    }
+
+    fn recover_from_storm(&mut self, nrc: Vec<u8>) -> Result<Vec<u8>, Error> {
+        self.reinit("responsePending storm");
+        Ok(nrc)
+    }
+}
+
 impl UdsTransport for KLineEcu {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         self.chan.clear_periodic()?; // vendor sequence clears before every request
         let frame = self.frame(req);
         self.chan.write(&frame)?;
-        let chan = &mut self.chan;
-        drain_pending(|| {
-            let raw = chan.read(timeout)?;
-            Ok(strip_header(&raw.data)?.to_vec())
-        })
+
+        // Swallow `7F .. 78` responsePending frames until the real reply arrives
+        // or the ECU goes quiet. Unlike the shared `drain_pending`, this keeps
+        // draining (up to MAX_PENDING_TIME) instead of capping at a fixed count,
+        // so a pending-storm's frames are all consumed here rather than leaking
+        // into the next request. If the ECU streams `78`s then goes silent
+        // (a LID it can't service), the last NRC is surfaced — not a bare
+        // timeout — and the ring is flushed clean.
+        let start = Instant::now();
+        let mut last_pending: Option<Vec<u8>> = None;
+        loop {
+            // After the first `78`, wait long enough to outlast the storm's
+            // growing inter-frame gap, so we only conclude "quiet" once the ECU
+            // is truly done — not mid-storm (which leaves it wedged).
+            let read_to = if last_pending.is_some() { timeout.max(PENDING_READ_TIMEOUT) } else { timeout };
+            match self.chan.read(read_to) {
+                Ok(raw) => {
+                    let resp = strip_header(&raw.data)?.to_vec();
+                    if is_response_pending(&resp) {
+                        last_pending = Some(resp);
+                        if start.elapsed() >= MAX_PENDING_TIME {
+                            return self.recover_from_storm(last_pending.unwrap());
+                        }
+                        continue;
+                    }
+                    return Ok(resp); // real application response
+                }
+                Err(Error::Timeout(_)) if last_pending.is_some() => {
+                    // Streamed pending, then quiet: this LID never resolves and
+                    // the ECU is now wedged — recover it for the next request.
+                    return self.recover_from_storm(last_pending.unwrap());
+                }
+                Err(e @ Error::Timeout(_)) => {
+                    // Silent LID: no answer, no pending. A silent LID can leave a
+                    // K-line ECU unresponsive to *subsequent* requests — the
+                    // "answers 21 00 but every live LID after the first
+                    // unsupported one goes dark" symptom seen on the NHW20 ABS /
+                    // Body / EMPS. Techstream re-FAST_INITs after a no-answer LID
+                    // (proven in the live capture); do the same so the next
+                    // request starts from a live session, then surface the
+                    // silence to this caller.
+                    self.reinit("silent LID");
+                    return Err(e);
+                }
+                Err(e) => return Err(e), // non-timeout error (e.g. no filter)
+            }
+        }
     }
 }
 

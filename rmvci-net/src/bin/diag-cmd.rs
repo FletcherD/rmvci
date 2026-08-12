@@ -130,11 +130,25 @@ fn help() {
         "commands:\n  \
          <hex bytes>          send a raw request (first byte = service), e.g. `21 0d`\n  \
          sweep <sid> [s] [e]  send <sid> <id> for id s..=e (default 21 00 ff), list responders\n  \
+         session <mode>       StartDiagnosticSession `10 <mode>` (e.g. `session 81`);\n  \
+         \x20                    session-gated ECUs (ABS/Body/Gateway/EMPS/Trans) need it\n  \
+         tp                   TesterPresent `3e 01` (keepalive for a session)\n  \
          kline <hex>          switch to a K-line ECU address (runs FAST_INIT)\n  \
          can <tx> <rx>        switch to a CAN ECU (ISO-TP tx / rx ids), e.g. `can 7e0 7e8`\n  \
          init                 re-run FAST_INIT (K-line only)\n  \
-         help | quit"
+         help | quit\n  \
+         (flags: --session <mode> sends 10 <mode> after bring-up; --tp-each sends\n  \
+         \x20         3e 01 before every request to hold a session open)"
     );
+}
+
+/// Send `10 <mode>` and report; used by the `session` command and `--session`.
+fn start_session(io: &mut dyn UdsTransport, mode: u8) {
+    println!("-> [10, {mode:02x}]  (StartDiagnosticSession)");
+    match io.request(&[0x10, mode], TIMEOUT) {
+        Ok(resp) => show_response(&[0x10, mode], &resp),
+        Err(e) => println!("  transport error: {e}"),
+    }
 }
 
 fn bring_up_kline(dev: &Device, addr: u8) -> Result<Bus, Error> {
@@ -150,7 +164,7 @@ fn bring_up_can(dev: &Device, tx: CanId, rx: CanId) -> Result<Bus, Error> {
     Ok(Bus::Can { io, tx, rx })
 }
 
-fn run(addr: &str, start: Bus0) -> Result<(), Box<dyn std::error::Error>> {
+fn run(addr: &str, start: Bus0, session: Option<u8>, tp_each: bool) -> Result<(), Box<dyn std::error::Error>> {
     println!("connecting to bridge {addr} …");
     let dev = Device::open_transport(TcpTransport::connect(addr)?, DeviceConfig::default())?;
     println!("cable firmware: {}", dev.firmware_version()?);
@@ -159,6 +173,9 @@ fn run(addr: &str, start: Bus0) -> Result<(), Box<dyn std::error::Error>> {
         Bus0::KLine(a) => bring_up_kline(&dev, a)?,
         Bus0::Can(tx, rx) => bring_up_can(&dev, tx, rx)?,
     };
+    if let Some(mode) = session {
+        start_session(bus.io(), mode);
+    }
     help();
 
     let stdin = std::io::stdin();
@@ -203,10 +220,28 @@ fn run(addr: &str, start: Bus0) -> Result<(), Box<dyn std::error::Error>> {
                 let sid = it.next().and_then(|s| parse_hex(s).ok()).and_then(|v| v.first().copied()).unwrap_or(0x21);
                 let s = it.next().and_then(|s| parse_hex(s).ok()).and_then(|v| v.first().copied()).unwrap_or(0x00);
                 let e = it.next().and_then(|s| parse_hex(s).ok()).and_then(|v| v.first().copied()).unwrap_or(0xff);
+                if tp_each {
+                    let _ = bus.io().request(&[0x3e, 0x01], TIMEOUT);
+                }
                 sweep(bus.io(), sid, s, e);
+            }
+            "session" => match it.next().and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok()) {
+                Some(mode) => start_session(bus.io(), mode),
+                None => println!("usage: session <mode hex>, e.g. session 81"),
+            },
+            "tp" => {
+                println!("-> [3e, 01]  (TesterPresent)");
+                match bus.io().request(&[0x3e, 0x01], TIMEOUT) {
+                    Ok(resp) => show_response(&[0x3e, 0x01], &resp),
+                    Err(e) => println!("  transport error: {e}"),
+                }
             }
             _ => match parse_hex(line) {
                 Ok(req) => {
+                    if tp_each {
+                        // Hold the session open before the real request; ignore its reply.
+                        let _ = bus.io().request(&[0x3e, 0x01], TIMEOUT);
+                    }
                     println!("-> {req:02x?}");
                     match bus.io().request(&req, TIMEOUT) {
                         Ok(resp) => show_response(&req, &resp),
@@ -238,6 +273,8 @@ fn main() -> ExitCode {
 
     let mut addr = "192.168.1.207:6979".to_string();
     let mut start = Bus0::KLine(0x98);
+    let mut session: Option<u8> = None;
+    let mut tp_each = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -253,11 +290,13 @@ fn main() -> ExitCode {
                     return ExitCode::from(2);
                 }
             },
+            "--session" => session = it.next().and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok()),
+            "--tp-each" => tp_each = true,
             other => addr = other.to_string(),
         }
     }
 
-    match run(&addr, start) {
+    match run(&addr, start, session, tp_each) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

@@ -40,7 +40,34 @@ pub struct TcpTransport {
 impl TcpTransport {
     /// Connect to a bridge and complete the version handshake.
     pub fn connect(addr: impl ToSocketAddrs) -> Result<Self, TransportError> {
-        let mut stream = TcpStream::connect(addr)?;
+        Self::handshake(TcpStream::connect(addr)?)
+    }
+
+    /// Like [`connect`](Self::connect) but bounds the TCP connect itself with
+    /// `timeout`, so an unreachable bridge address fails fast instead of
+    /// blocking on the OS connect timeout (~2 min). Tries each resolved address
+    /// in turn.
+    pub fn connect_timeout(
+        addr: impl ToSocketAddrs,
+        timeout: Duration,
+    ) -> Result<Self, TransportError> {
+        let addrs: Vec<_> = addr.to_socket_addrs()?.collect();
+        let mut last: Option<std::io::Error> = None;
+        for a in &addrs {
+            match TcpStream::connect_timeout(a, timeout) {
+                Ok(s) => return Self::handshake(s),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(net_err(match last {
+            Some(e) => e.to_string(),
+            None => "no socket addresses resolved".to_string(),
+        }))
+    }
+
+    /// Disable Nagle and complete the `RMVN`/version handshake on a freshly
+    /// connected stream.
+    fn handshake(mut stream: TcpStream) -> Result<Self, TransportError> {
         // Strict request/response with small frames: Nagle would add up to a
         // round of delay to every exchange, so disable it.
         stream.set_nodelay(true)?;

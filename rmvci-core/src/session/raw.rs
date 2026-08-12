@@ -169,6 +169,10 @@ impl RawChannel {
         )
     }
 
+    pub fn clear_rx(&mut self) -> Result<(), Error> {
+        self.transact_status(inner::clear_rx(self.proto), Cmd::Ioctl, Duration::from_millis(1000))
+    }
+
     /// K-line FAST_INIT; returns the ECU key bytes.
     pub fn fast_init(&mut self, init: &[u8]) -> Result<Vec<u8>, Error> {
         let resp =

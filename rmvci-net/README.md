@@ -83,13 +83,34 @@ CAN ISO-TP), switchable at runtime:
 ```sh
 diag-cmd 192.168.1.207:6979 [--ecu 98]        # start on K-line (default addr 0x98)
 diag-cmd 192.168.1.207:6979 --can 7e0 7e8     # start on CAN (tx / rx ids)
+diag-cmd 192.168.1.207:6979 --ecu 29 --session 81 --tp-each   # session-gated ECU
 # then, one command per line (or piped in):
 #   21 0d            raw request -> response (OK / NEGATIVE / raw bytes)
 #   sweep 21 00 ff   send 21 <id> for id 00..=ff, list the responders
+#   session 81       StartDiagnosticSession 10 81 (ABS/Body/Gateway/EMPS/Trans need it)
+#   tp               TesterPresent 3e 01 (session keepalive)
 #   kline 07         switch to a K-line ECU address (FAST_INIT)
 #   can 7e0 7e8      switch to a CAN ECU (ISO-TP tx / rx ids)
 #   init | help | quit
+# flags: --session <mode> sends 10 <mode> after bring-up; --tp-each sends 3e 01
+#        before every request to hold a session open.
 printf '21 02\ncan 7e0 7e8\n01 00\nquit\n' | diag-cmd 192.168.1.207:6979
+```
+
+Some K-line ECUs (A/C amp, Immobiliser) answer `21 <LID>` reads straight after
+FAST_INIT; others (ABS, Body, Gateway, EMPS, Transmission) answer only their
+`21 00` ID read until a **StartDiagnosticSession** (`10 81`) succeeds — use
+`--session 81 --tp-each`. A few LIDs (e.g. A/C `21 52`, DTC read `18`) make the
+ECU stream `7F .. 78` responsePending forever, which wedges it; `KLineEcu`
+detects this, surfaces the NRC, and auto re-FAST_INITs so the next request still
+works (so a `sweep` survives storm LIDs). See `re/techstream/LIVE_VALIDATION_2026-08-09.md`.
+
+Raw K-line frame observer (no responsePending drain — shows the whole
+pending→final sequence + timing; sends a `then`-separated request sequence):
+
+```sh
+kraw 192.168.1.207:6979 98 18 00 ff 00              # watch a DTC read stream 78s
+kraw 192.168.1.207:6979 29 21 00 then 10 81 then 21 01   # probe a session flow
 ```
 
 Both `rmvci_core::KLineEcu` (K-line) and `FirmwareIsoTp` (CAN) are `UdsTransport`,

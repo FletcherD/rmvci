@@ -38,3 +38,9 @@ required-features = ["client"]
 [[bin]]
 name = "diag-cmd"
 required-features = ["client"]
+
+# Host-side J2534 RPC server for the Techstream forwarding shim. Uses only the
+# always-compiled TcpTransport (client) + rmvci-core raw session — no backend
+# features, so it builds with a plain `cargo build`.
+[[bin]]
+name = "ts-j2534-rpc"

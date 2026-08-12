@@ -95,6 +95,59 @@ fn live_kline_regression() {
     }
 }
 
+/// Reproduce the exact K-line frames the **forwarding path** (v18 shim ->
+/// ts-j2534-rpc -> RawChannel) puts on the wire, so a usbmon capture can be
+/// diffed byte-for-byte against the genuine XHorse driver's capture
+/// (re/techstream/dll-sniff). Same inputs v18 sends: connect 10400, the three
+/// header filters in v18's order, the 12 SET_CONFIG params with DATA_RATE=10400,
+/// then FAST_INIT `68 6a f0 81`. Deliberately emits **no** clear before
+/// FAST_INIT: ts-j2534-rpc no-ops v18's CLEAR_RX (ioctl 0x8), so nothing reaches
+/// the cable there — that suppression is exactly what this repro must preserve.
+#[test]
+#[ignore = "needs the Mini-VCI cable (set RMVCI_PORT); usbmon-capture alongside"]
+fn live_kline_v18_forwarding_repro() {
+    use rmvci_core::{Iso14230, KLineConfig};
+
+    let dev = Device::open(port()).expect("open + handshake");
+    println!("DES key: {:02x?}", dev.des_key());
+    let mut ch = dev.connect::<Iso14230>(KLineConfig::default()).expect("connect ISO14230 @ 10400");
+
+    // The forwarding path installs all three header filters via
+    // RawChannel::start_filter, which does NOT stop the previous — so all three
+    // (c0/c0, c0/80, c0/40) stay live, exactly as v18 (no StopFilters) drives it.
+    // The typed set_filter would instead keep only the last (c0/40) and drop the
+    // c0/80 that passes the 0x8x FAST_INIT keybyte header — do NOT use it here.
+    for (id, pattern) in [0xc0u8, 0x80, 0x40].into_iter().enumerate() {
+        ch.raw()
+            .start_filter(id as u32, 1, &[0xc0], &[pattern], None, 1)
+            .unwrap_or_else(|e| panic!("filter {pattern:02x}: {e}"));
+    }
+    const CFG: [(u32, u32); 12] = [
+        (1, 10400), (7, 40), (10, 100), (12, 10), (19, 300), (20, 25),
+        (21, 50), (14, 105), (15, 20), (16, 20), (17, 50), (18, 330),
+    ];
+    for (p, v) in CFG {
+        ch.set_config(p, v).unwrap_or_else(|e| panic!("SET_CONFIG {p}: {e}"));
+    }
+    // HYPOTHESIS: the cable needs a clear right before FAST_INIT. The genuine
+    // driver sends CLEAR_RX here; the forwarding path (ts-j2534-rpc) no-ops
+    // v18's CLEAR_RX, so nothing reaches the cable and FAST_INIT returns [08].
+    // Toggle with RMVCI_CLEAR=1 to prove it.
+    if std::env::var("RMVCI_CLEAR").is_ok() {
+        ch.raw().clear_rx().expect("clear_rx before fast_init");
+        println!("(sent CLEAR_RX 0x08 before FAST_INIT — matching the vendor DLL)");
+    }
+    if let Ok(ms) = std::env::var("RMVCI_DELAY_MS") {
+        let ms: u64 = ms.parse().unwrap_or(0);
+        std::thread::sleep(Duration::from_millis(ms));
+        println!("(waited {ms} ms before FAST_INIT — the vendor DLL waits ~130 ms here)");
+    }
+    match ch.fast_init(&[0x68, 0x6a, 0xf0, 0x81]) {
+        Ok(k) => println!("FAST_INIT -> {k:02x?}"),
+        Err(e) => println!("FAST_INIT: {e} (cable-only run)"),
+    }
+}
+
 /// M4: both ISO-TP paths against the bench fake ECU
 /// (`re/bench/isotp_responder.py` on the CH340 USB-CAN analyzer):
 /// `21 43` -> single-frame `61 43 xx xx`, `21 44` -> 40-byte multi-frame.
