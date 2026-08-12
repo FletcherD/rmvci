@@ -1,6 +1,8 @@
 [package]
 name = "rmvci-android"
 description = "JNI bindings so an Android app can drive the Mini-VCI through rmvci-core"
+# Build-product (cdylib .so for Android), not a registry dependency.
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

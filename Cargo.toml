@@ -9,6 +9,8 @@ exclude = ["fuzz"]
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+repository = "https://github.com/FletcherD/rmvci"
+homepage = "https://github.com/FletcherD/rmvci"
 # Derived from libMVCI (GPL-3.0): structure ported from its C sources and the
 # captured test vectors are carried over verbatim.
 license = "GPL-3.0-or-later"

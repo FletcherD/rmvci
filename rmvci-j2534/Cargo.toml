@@ -1,6 +1,9 @@
 [package]
 name = "rmvci-j2534"
 description = "SAE J2534 PassThru cdylib for the Mini-VCI cable, over rmvci-core"
+# Build-product, not a registry dependency: you clone the repo and
+# `cargo build -p rmvci-j2534` to get the DLL/.so. Nothing `cargo add`s it.
+publish = false
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
