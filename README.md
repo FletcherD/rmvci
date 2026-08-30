@@ -37,12 +37,13 @@ cargo run -p prius-hvac -- /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
 ```
 
 ```rust
-use rmvci_core::{CanId, Device, FirmwareIsoTp};
+use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
 use std::time::Duration;
 
 let dev = Device::open("/dev/ttyUSB0")?;
-let mut tp = FirmwareIsoTp::new(&dev, CanId::Std(0x7c4), CanId::Std(0x7cc))?;
-let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?;  // 61 43 <cmd> <act>
+let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
+let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
+let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?; // 61 43 <cmd> <act>
 ```
 
 ## Traps this device sets for you
@@ -102,29 +103,29 @@ it — this is a general J2534 driver, not just a Prius reader:
   `write`/`fast_init`/`five_baud_init` surface). J1850 VPW/PWM are reachable
   only via the raw `RawChannel` path — the firmware objects exist but are
   unexercised, so there is no typed API and no hardware claim.
-- **Extended/mixed ISO-TP addressing** — on both the firmware path
-  (`FirmwareIsoTp::with_ext_addr`) and the host path
-  (`IsoTpConfig::with_ext_addr`), and via a 5-byte J2534 flow-control filter
-  with `ISO15765_ADDR_TYPE`.
+- **Extended/mixed ISO-TP addressing** — `IsoTpConfig::with_ext_addr` on
+  either `IsoTpPath`, and via a 5-byte J2534 flow-control filter with
+  `ISO15765_ADDR_TYPE`.
 - **Host-path ISO15765 channel** — connect an ISO15765 channel with the vendor
   `RMVCI_HOST_ISOTP` ConnectFlag (0x8000_0000) to run ISO-TP host-side over raw
   CAN instead of the firmware. Slower per frame, but it segments payloads beyond
   255 bytes correctly and honors the ECU's BS/STmin — the two things the
   firmware path cannot do (see *Which ISO-TP path?*). The default (flag unset)
-  stays the fast firmware path. NB: the cable has a single global RX owner, so a
-  channel is one or the other, never both at once.
+  stays the fast firmware path. In the native API the same choice is the
+  `IsoTpPath` argument to `IsoTp::new`. NB: the cable has a single global RX
+  owner, so a channel is one or the other, never both at once.
 
 > **Bench-verify pending.** Three wire behaviours are derived from the firmware
 > RE and not yet confirmed on hardware: the `GET_CONFIG`/`READ_VBATT` reply
 > framing (assumed `[ILEN][0x0e][value u32 LE]`), and whether the firmware
 > leaves the extended-addressing byte at the head of the reassembled reply
-> (`FirmwareIsoTp::recv` strips it when RxStatus 0x80 is set). Run
+> (`IsoTp::recv` on the firmware path strips it when RxStatus 0x80 is set). Run
 > `re/bench/isotp_responder_extaddr.py` with the `live_can_extended_addressing`
 > / `live_ioctl_readback` tests to settle them.
 
 ## Which ISO-TP path?
 
-| | `FirmwareIsoTp` (protocol 6) | `IsoTp` (protocol 5, host-side) |
+| | `IsoTpPath::Firmware` (protocol 6) | `IsoTpPath::Host` (protocol 5, raw CAN) |
 |---|---|---|
 | Transmit > 255 bytes | **broken** (FF_DL truncated to 8 bits) — refused with `FirmwareFfDlLimit` | full 12-bit FF_DL, to 4095 |
 | Flow-control block size | ignored — **measured**: sent 7 when granted 2 | honored — **measured**: paused at exactly 2 |
@@ -134,11 +135,11 @@ it — this is a general J2534 driver, not just a Prius reader:
 | CF sequence error on receive | dropped silently, no notification | `SequenceError { expected, got }` |
 | Speed | fast (segmentation on the MCU) | ~20–35 ms per frame — every frame is a USB round trip |
 
-Both implement `UdsTransport`, so switching is one line. Use the firmware
+One `IsoTp` type serves both, so switching is one argument. Use the firmware
 path for short requests (the `21 43` case); use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
 Through the J2534 shim the choice is the `RMVCI_HOST_ISOTP` ConnectFlag; in the
-native API it is `FirmwareIsoTp` vs `IsoTp`.
+native API it is the `IsoTpPath` passed to `IsoTp::new`.
 
 Worth being explicit about the reassembly row, because it is the one failure
 the driver cannot defend against: on the firmware path the adapter does the
@@ -190,8 +191,8 @@ back. Sending the same 60-byte payload down each path:
 
 | | frames before pausing (asked 2) | inter-frame gap (asked 50 ms) |
 |---|---|---|
-| `FirmwareIsoTp` (protocol 6) | **7** — ignored | **~0 ms** — ignored |
-| `IsoTp` (host, protocol 5) | **2** — honored | **50.0 ms** — honored |
+| `IsoTpPath::Firmware` (protocol 6) | **7** — ignored | **~0 ms** — ignored |
+| `IsoTpPath::Host` (protocol 5) | **2** — honored | **50.0 ms** — honored |
 
 That is the concrete reason the host path exists, now measured rather than
 inferred. Against an ECU that means what it says with `BS`, the firmware path

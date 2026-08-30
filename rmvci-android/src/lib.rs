@@ -52,7 +52,7 @@ use jni::objects::{JByteArray, JClass, JObject};
 use jni::sys::{jbyteArray, jint, jlong, jstring};
 
 use rmvci_core::transport::JniTransport;
-use rmvci_core::{CanId, Device, DeviceConfig, FirmwareIsoTp};
+use rmvci_core::{CanId, Device, DeviceConfig, IsoTp, IsoTpConfig, IsoTpPath};
 
 static LAST_ERROR: Mutex<String> = Mutex::new(String::new());
 
@@ -67,11 +67,7 @@ fn set_err(msg: impl Into<String>) {
 /// an 11-bit standard id (low 11 bits).
 fn can_id(raw: jint) -> CanId {
     let v = raw as u32;
-    if v & 0x8000_0000 != 0 {
-        CanId::Ext(v & 0x1fff_ffff)
-    } else {
-        CanId::Std((v & 0x7ff) as u16)
-    }
+    if v & 0x8000_0000 != 0 { CanId::Ext(v & 0x1fff_ffff) } else { CanId::Std((v & 0x7ff) as u16) }
 }
 
 /// What a handle points at. The `Device` keeps the session (and its actor
@@ -84,7 +80,7 @@ struct Session {
     /// ints keeps 11- and 29-bit ids distinct. Connecting and installing a
     /// filter costs two round trips, so an app polling one ECU should not pay
     /// them on every request.
-    tp: Option<(i32, i32, i32, FirmwareIsoTp)>,
+    tp: Option<(i32, i32, i32, IsoTp)>,
 }
 
 /// # Safety
@@ -189,11 +185,11 @@ pub extern "system" fn Java_dev_rmvci_Rmvci_request<'a>(
         s.tp = None;
         let (tx, rx) = (can_id(tx_id), can_id(rx_id));
         // ext_addr < 0 means normal addressing; 0..=255 selects extended/mixed.
-        let opened = if (0..=255).contains(&ext_addr) {
-            FirmwareIsoTp::with_ext_addr(&s.device, tx, rx, ext_addr as u8)
-        } else {
-            FirmwareIsoTp::new(&s.device, tx, rx)
-        };
+        let mut cfg = IsoTpConfig::new(tx, rx);
+        if (0..=255).contains(&ext_addr) {
+            cfg = cfg.with_ext_addr(ext_addr as u8);
+        }
+        let opened = IsoTp::new(&s.device, cfg, IsoTpPath::Firmware);
         match opened {
             Ok(tp) => s.tp = Some((tx_id, rx_id, ext_addr, tp)),
             Err(e) => {
@@ -334,7 +330,11 @@ fn bridge_loop(listener: TcpListener, mut io: JniTransport, stop: Arc<AtomicBool
 /// poll interval and exits; a client mid-request unblocks when the Java side
 /// closes the `UsbSerialPort`. Does not join (the caller is the UI thread).
 #[unsafe(no_mangle)]
-pub extern "system" fn Java_dev_rmvci_Rmvci_stopBridge(_env: JNIEnv, _class: JClass, handle: jlong) {
+pub extern "system" fn Java_dev_rmvci_Rmvci_stopBridge(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) {
     if handle == 0 {
         return;
     }
@@ -362,8 +362,14 @@ mod tests {
         assert_eq!(can_id(0x7c4), CanId::Std(0x7c4));
         assert_eq!(can_id(0x7ff), CanId::Std(0x7ff));
         // EFF flag (bit 31) selects a 29-bit id from the low 29 bits.
-        assert_eq!(can_id(0x1234_5678u32 as i32 | (0x8000_0000u32 as i32)), CanId::Ext(0x1234_5678));
-        assert_eq!(can_id(0x18da_f110u32 as i32 | (0x8000_0000u32 as i32)), CanId::Ext(0x18da_f110));
+        assert_eq!(
+            can_id(0x1234_5678u32 as i32 | (0x8000_0000u32 as i32)),
+            CanId::Ext(0x1234_5678)
+        );
+        assert_eq!(
+            can_id(0x18da_f110u32 as i32 | (0x8000_0000u32 as i32)),
+            CanId::Ext(0x18da_f110)
+        );
         // A 29-bit diagnostic id with the flag set.
         assert_eq!(can_id(0x98da_f110u32 as i32), CanId::Ext(0x18da_f110));
     }

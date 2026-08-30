@@ -18,20 +18,12 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use rmvci_core::{
-    CanId, Device, DeviceConfig, Error, FirmwareIsoTp, IsoTp, IsoTpConfig, UdsTransport,
-};
+use rmvci_core::{CanId, Device, DeviceConfig, Error, IsoTp, IsoTpConfig, IsoTpPath};
 use rmvci_net::TcpTransport;
 
 const ECU_TX: u16 = 0x7c4;
 const ECU_RX: u16 = 0x7cc;
 const LID_AIR_OUTLET_SERVO: u8 = 0x43;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum IsoTpPath {
-    Firmware,
-    Host,
-}
 
 struct Args {
     addr: String,
@@ -78,10 +70,7 @@ fn decode_servo(reply: &[u8]) -> Result<(u8, u8), String> {
 fn read_hvac(dev: &Device, path: IsoTpPath, watch: bool) -> Result<(), Error> {
     let tx = CanId::Std(ECU_TX);
     let rx = CanId::Std(ECU_RX);
-    let mut transport: Box<dyn UdsTransport> = match path {
-        IsoTpPath::Firmware => Box::new(FirmwareIsoTp::new(dev, tx, rx)?),
-        IsoTpPath::Host => Box::new(IsoTp::new(dev, IsoTpConfig::new(tx, rx))?),
-    };
+    let mut transport = IsoTp::new(dev, IsoTpConfig::new(tx, rx), path)?;
     let request = [0x21, LID_AIR_OUTLET_SERVO];
     loop {
         match transport.request(&request, Duration::from_secs(2)) {

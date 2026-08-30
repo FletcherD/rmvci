@@ -16,12 +16,13 @@ use crate::error::{Error, Result};
 /// reply to [`Error::Negative`].
 ///
 /// ```no_run
-/// use rmvci_core::{CanId, Device, FirmwareIsoTp};
+/// use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
 /// use rmvci_diag::Uds;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let dev = Device::open("/dev/ttyUSB0")?;
-/// let isotp = FirmwareIsoTp::new(&dev, CanId::Std(0x7e0), CanId::Std(0x7e8))?;
+/// let cfg = IsoTpConfig::new(CanId::Std(0x7e0), CanId::Std(0x7e8));
+/// let isotp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
 /// let mut uds = Uds::new(isotp);
 /// uds.diagnostic_session_control(0x03)?;          // extended session
 /// let vin = uds.read_data_by_id(0xf190)?;         // 22 F1 90

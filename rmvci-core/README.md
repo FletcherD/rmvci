@@ -16,9 +16,10 @@ diagnostic clients, the J2534 `cdylib`, and the Android JNI layer are built on.
 - **Typed `Channel<P>`** — a bus channel whose `ProtocolId` and filter-identifier
   width are fixed at compile time, so the two ways to brick the adapter
   (an out-of-range protocol, a wrong-width filter) are *unrepresentable*.
-- **ISO 15765-2** both ways — through the firmware (`FirmwareIsoTp`) and
-  host-side over raw CAN (`IsoTp`), including extended/mixed addressing on both
-  paths.
+- **`IsoTp`** — ISO 15765-2 on either `IsoTpPath`: through the firmware
+  (fast, the default) or host-side over raw CAN (segments beyond 255 bytes and
+  honours the ECU's BS/STmin, which the firmware cannot). Extended/mixed
+  addressing on both.
 - **`KLineEcu`** — cooked ISO 14230 (K-line) bring-up: the full vendor
   `SET_CONFIG` timing sequence, FAST_INIT, response-pending draining, and
   automatic re-init of an ECU wedged by a pending storm or a silent LID.
@@ -46,11 +47,12 @@ rmvci-core = "0.1"                                    # serial backend
 ## Use
 
 ```rust
-use rmvci_core::{CanId, Device, FirmwareIsoTp};
+use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
 use std::time::Duration;
 
 let dev = Device::open("/dev/ttyUSB0")?;
-let mut tp = FirmwareIsoTp::new(&dev, CanId::Std(0x7c4), CanId::Std(0x7cc))?;
+let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
+let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
 let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?; // 61 43 <cmd> <act>
 ```
 

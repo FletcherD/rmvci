@@ -9,9 +9,7 @@ use std::time::Duration;
 use rmvci_core::codec::{frame, inner};
 use rmvci_core::transport::mock::{MockClock, MockTransport, Step};
 use rmvci_core::types::ProtocolId;
-use rmvci_core::{
-    CanId, Device, DeviceConfig, Error, FirmwareIsoTp, IsoTp, IsoTpConfig, IsoTpError,
-};
+use rmvci_core::{CanId, Device, DeviceConfig, Error, IsoTp, IsoTpConfig, IsoTpError, IsoTpPath};
 
 const KEY_OLD: [u8; 8] = [0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f];
 const TX_ID: [u8; 4] = [0x00, 0x00, 0x07, 0xc4];
@@ -135,8 +133,8 @@ fn host_path_single_and_multi_frame() {
     }
 
     let device = dev(steps);
-    let mut tp = IsoTp::new(&device, IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc)))
-        .expect("isotp channel");
+    let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
+    let mut tp = IsoTp::new(&device, cfg, IsoTpPath::Host).expect("isotp channel");
 
     let r1 = tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
     assert_eq!(r1, [0x61, 0x43, 0x7b, 0x79]);
@@ -180,8 +178,8 @@ fn firmware_path_reply_and_ffdl_guard() {
     }));
 
     let device = dev(steps);
-    let mut tp = FirmwareIsoTp::new(&device, CanId::Std(0x7c4), CanId::Std(0x7cc))
-        .expect("firmware isotp channel");
+    let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
+    let mut tp = IsoTp::new(&device, cfg, IsoTpPath::Firmware).expect("firmware isotp channel");
 
     let r = tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
     assert_eq!(r, [0x61, 0x43, 0x7b, 0x79]);
@@ -240,14 +238,14 @@ fn firmware_path_extended_addressing() {
     }));
 
     let device = dev(steps);
-    let mut tp = FirmwareIsoTp::with_ext_addr(&device, CanId::Std(0x7c4), CanId::Std(0x7cc), ADDR)
-        .expect("firmware ext-addr channel");
+    let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc)).with_ext_addr(ADDR);
+    let mut tp = IsoTp::new(&device, cfg, IsoTpPath::Firmware).expect("firmware ext-addr channel");
     let r = tp.request(&[0x21, 0x43], Duration::from_secs(2)).expect("21 43");
     assert_eq!(r, [0x61, 0x43, 0x7b, 0x79]);
 }
 
 /// The same FF_DL>255 guard must also protect the raw `PassThruWriteMsgs` path
-/// (a J2534 app writing an ISO15765 message directly, bypassing FirmwareIsoTp).
+/// (a J2534 app writing an ISO15765 message directly, bypassing `IsoTp`).
 /// The guard fires before any wire traffic, so no write Step is scripted.
 #[test]
 fn raw_write_guards_ffdl_over_255() {

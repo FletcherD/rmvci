@@ -31,9 +31,9 @@ use rmvci_core::Error as CoreError;
 use crate::common::{parse_positive, strip_echo};
 use crate::error::{Error, Result};
 
-/// The `send` + `recv` pair the A8/A1/A2 sequence needs. Both
-/// [`rmvci_core::IsoTp`] (host-side) and [`rmvci_core::FirmwareIsoTp`] already
-/// expose these; this trait just lets [`ToyotaCanLive`] accept either.
+/// The `send` + `recv` pair the A8/A1/A2 sequence needs. [`rmvci_core::IsoTp`]
+/// exposes these; the trait is the seam that lets [`ToyotaCanLive`] be driven
+/// by a scripted channel in tests.
 pub trait IsoTpChannel {
     /// Send one ISO-TP message (segmentation handled by the implementation).
     fn send(&mut self, payload: &[u8]) -> std::result::Result<(), CoreError>;
@@ -47,15 +47,6 @@ impl IsoTpChannel for rmvci_core::IsoTp {
     }
     fn recv(&mut self, timeout: Duration) -> std::result::Result<Vec<u8>, CoreError> {
         rmvci_core::IsoTp::recv(self, timeout)
-    }
-}
-
-impl IsoTpChannel for rmvci_core::FirmwareIsoTp {
-    fn send(&mut self, payload: &[u8]) -> std::result::Result<(), CoreError> {
-        rmvci_core::FirmwareIsoTp::send(self, payload)
-    }
-    fn recv(&mut self, timeout: Duration) -> std::result::Result<Vec<u8>, CoreError> {
-        rmvci_core::FirmwareIsoTp::recv(self, timeout)
     }
 }
 
@@ -239,7 +230,10 @@ mod tests {
         let body = [0x01, 0x04, 0xff, 0x07, 0x25, 0x25];
         let mut pids = Vec::new();
         parse_pid_tlv(&body, &mut pids);
-        assert_eq!(pids, vec![EnumeratedPid { id: 1, width: 4, support: vec![0xff, 0x07, 0x25, 0x25] }]);
+        assert_eq!(
+            pids,
+            vec![EnumeratedPid { id: 1, width: 4, support: vec![0xff, 0x07, 0x25, 0x25] }]
+        );
     }
 
     #[test]

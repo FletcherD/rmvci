@@ -110,7 +110,8 @@ impl TxMachine {
         }
         // The address byte costs one data byte, so a single frame holds ≤ 6.
         let sf_max = 7 - addr.is_some() as usize;
-        let state = if payload.len() <= sf_max { TxState::SingleFrame } else { TxState::FirstFrame };
+        let state =
+            if payload.len() <= sf_max { TxState::SingleFrame } else { TxState::FirstFrame };
         Ok(Self {
             payload: payload.to_vec(),
             offset: 0,
@@ -277,7 +278,16 @@ impl RxMachine {
         n_cr: Duration,
         addr: Option<u8>,
     ) -> Self {
-        Self { buf: Vec::new(), ff_dl: 0, rx_bs, rx_stmin, padding, n_cr, addr, state: RxState::Idle }
+        Self {
+            buf: Vec::new(),
+            ff_dl: 0,
+            rx_bs,
+            rx_stmin,
+            padding,
+            n_cr,
+            addr,
+            state: RxState::Idle,
+        }
     }
 
     fn fc(&self) -> Vec<u8> {

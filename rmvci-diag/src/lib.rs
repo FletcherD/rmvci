@@ -6,8 +6,8 @@
 //!
 //! - **K-line / ISO 14230** — via [`rmvci_core::KLineEcu`] (the Gen-2 Toyota
 //!   body/HVAC bus, e.g. the NHW20 Prius A/C amp at address `0x98`), and
-//! - **ISO-TP over CAN** — via [`rmvci_core::FirmwareIsoTp`] / [`rmvci_core::IsoTp`]
-//!   (powertrain/HV, and newer CAN A/C amps).
+//! - **ISO-TP over CAN** — via [`rmvci_core::IsoTp`] on either
+//!   [`rmvci_core::IsoTpPath`] (powertrain/HV, and newer CAN A/C amps).
 //!
 //! Pick the client by ECU generation:
 //!

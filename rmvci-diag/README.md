@@ -9,7 +9,7 @@ The same clients drive both Toyota diagnostic buses:
 | Bus | Transport | Typical ECUs |
 |-----|-----------|--------------|
 | **K-line / ISO 14230** | `rmvci_core::KLineEcu` | Gen-2 body/HVAC (NHW20 Prius A/C amp, addr `0x98`) |
-| **ISO-TP / CAN** | `rmvci_core::FirmwareIsoTp` / `IsoTp` | powertrain, HV, newer CAN A/C amps |
+| **ISO-TP / CAN** | `rmvci_core::IsoTp` (either `IsoTpPath`) | powertrain, HV, newer CAN A/C amps |
 
 Pick the client by ECU generation:
 
@@ -50,11 +50,12 @@ let dtcs    = kwp.read_dtc_by_status(0x00, 0xff00)?; // 18 00 FF00
 ## Use — UDS over CAN
 
 ```rust
-use rmvci_core::{CanId, Device, FirmwareIsoTp};
+use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
 use rmvci_diag::Uds;
 
 let dev = Device::open("/dev/ttyUSB0")?;
-let isotp = FirmwareIsoTp::new(&dev, CanId::Std(0x7e0), CanId::Std(0x7e8))?;
+let cfg = IsoTpConfig::new(CanId::Std(0x7e0), CanId::Std(0x7e8));
+let isotp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
 let mut uds = Uds::new(isotp);
 
 uds.diagnostic_session_control(0x03)?;         // extended session

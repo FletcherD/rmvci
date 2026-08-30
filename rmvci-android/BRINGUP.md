@@ -203,7 +203,7 @@ check it before anything else.
   latency-timer vendor request. Written, never executed. If it fails the
   driver logs a warning and continues at the 16 ms default — worth checking,
   since on desktop the same fix took a `21 43` exchange from 48 ms to 30 ms.
-- Only `FirmwareIsoTp` has a JNI entry point. The host-side ISO-TP path works
+- Only `IsoTpPath::Firmware` has a JNI entry point. The host-side path works
   equally well over this transport but is not exposed — add it if you meet an
   ECU that means what it says with flow-control block size (see the main
   README for why that matters).

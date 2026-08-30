@@ -239,8 +239,8 @@ pub unsafe extern "system" fn PassThruConnect(
         if host_mode && proto == ProtocolId::Iso15765 {
             let can = CanConfig { bitrate: baud_rate as u32, flags: flags & !RMVCI_HOST_ISOTP };
             // Endpoints arrive later via the flow-control filter.
-            let cfg = IsoTpConfig::new(CanId::Std(0), CanId::Std(0));
-            return match IsoTp::connect_deferred(&slot.device, cfg, can) {
+            let cfg = IsoTpConfig::new(CanId::Std(0), CanId::Std(0)).with_can(can);
+            return match IsoTp::connect_deferred(&slot.device, cfg) {
                 Ok(tp) => {
                     slot.host = Some(tp);
                     unsafe { *channel_id = (slot_from_dev(device_id).unwrap() + 0x100) as c_ulong };

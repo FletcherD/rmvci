@@ -41,7 +41,7 @@ let io  = TcpTransport::connect("192.168.1.50:6979")?;
 let dev = Device::open_transport(io, DeviceConfig::default())?;
 println!("firmware: {}", dev.firmware_version()?);
 // dev now behaves exactly as a locally-attached cable: connect channels,
-// open FirmwareIsoTp / IsoTp, read PIDs, …
+// open an IsoTp on either path, read PIDs, …
 ```
 
 Phone side:
@@ -85,7 +85,7 @@ kraw 192.168.1.207:6979 98 18 00 ff 00              # watch a DTC read stream 78
 kraw 192.168.1.207:6979 29 21 00 then 10 81 then 21 01   # probe a session flow
 ```
 
-Both `rmvci_core::KLineEcu` (K-line) and `FirmwareIsoTp` (CAN) are `UdsTransport`,
+Both `rmvci_core::KLineEcu` (K-line) and `IsoTp` (CAN) are `UdsTransport`,
 so raw-send and sweep are bus-agnostic; the framing (ISO14230 header vs ISO-TP)
 and 0x78 handling happen in the library. No fixed PID list — for exploring the
 car's full surface across both networks. Proven live on both buses.

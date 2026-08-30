@@ -123,8 +123,18 @@ fn live_kline_v18_forwarding_repro() {
             .unwrap_or_else(|e| panic!("filter {pattern:02x}: {e}"));
     }
     const CFG: [(u32, u32); 12] = [
-        (1, 10400), (7, 40), (10, 100), (12, 10), (19, 300), (20, 25),
-        (21, 50), (14, 105), (15, 20), (16, 20), (17, 50), (18, 330),
+        (1, 10400),
+        (7, 40),
+        (10, 100),
+        (12, 10),
+        (19, 300),
+        (20, 25),
+        (21, 50),
+        (14, 105),
+        (15, 20),
+        (16, 20),
+        (17, 50),
+        (18, 330),
     ];
     for (p, v) in CFG {
         ch.set_config(p, v).unwrap_or_else(|e| panic!("SET_CONFIG {p}: {e}"));
@@ -159,7 +169,7 @@ fn live_kline_v18_forwarding_repro() {
 #[test]
 #[ignore = "needs the cable + bench responder (set RMVCI_PORT)"]
 fn live_can_firmware_vs_host() {
-    use rmvci_core::{CanId, FirmwareIsoTp, IsoTp, IsoTpConfig, UdsTransport};
+    use rmvci_core::{CanId, IsoTp, IsoTpConfig, IsoTpPath, UdsTransport};
 
     let tx = CanId::Std(0x7c4);
     let rx = CanId::Std(0x7cc);
@@ -183,7 +193,8 @@ fn live_can_firmware_vs_host() {
     // separate devices.
     let (fw1, fw2) = {
         let dev = open_retrying(&port());
-        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel");
+        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Firmware)
+            .expect("firmware channel");
         let r = run(&mut tp, "firmware");
         drop(tp);
         dev.close(); // wait for the port before the host path reopens it
@@ -193,7 +204,8 @@ fn live_can_firmware_vs_host() {
     // Host path (raw CAN, host machines).
     let (h1, h2) = {
         let dev = open_retrying(&port());
-        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx)).expect("host channel");
+        let mut tp =
+            IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Host).expect("host channel");
         run(&mut tp, "host    ")
     };
 
@@ -207,8 +219,8 @@ fn live_can_firmware_vs_host() {
 /// This is the experiment that settles the one ext-addr behaviour resting on
 /// RE alone (FINDINGS §10.4): whether the firmware flags the reply with
 /// RxStatus 0x80 and leaves the address byte at the head of the reassembled
-/// payload. The raw probe prints exactly what came back; the FirmwareIsoTp and
-/// host assertions then prove the strip logic is right end to end.
+/// payload. The raw probe prints exactly what came back; the firmware-path and
+/// host-path assertions then prove the strip logic is right end to end.
 ///
 /// ```sh
 /// python3 re/bench/isotp_responder_extaddr.py -v &
@@ -218,7 +230,7 @@ fn live_can_firmware_vs_host() {
 #[ignore = "needs the cable + ext-addr responder (set RMVCI_PORT)"]
 fn live_can_extended_addressing() {
     use rmvci_core::{
-        CanConfig, CanId, FirmwareIsoTp, FlowControlFilter, IsoTp, IsoTpConfig, Iso15765, RxStatus,
+        CanConfig, CanId, FlowControlFilter, Iso15765, IsoTp, IsoTpConfig, IsoTpPath, RxStatus,
         TxFlags,
     };
 
@@ -240,7 +252,9 @@ fn live_can_extended_addressing() {
                 println!("raw ext-addr reply: rx_status={:?} data={:02x?}", m.rx_status, m.data);
                 println!("  RxStatus ADDR_TYPE (0x80) set: {addr_type}");
                 println!("  byte after CAN id (data[4]): {:#04x}", m.data[4]);
-                println!("  -> if that is {ADDR:#04x}, the firmware keeps the address byte in the payload");
+                println!(
+                    "  -> if that is {ADDR:#04x}, the firmware keeps the address byte in the payload"
+                );
             }
             Err(e) => println!("raw ext-addr read failed: {e}"),
         }
@@ -248,10 +262,11 @@ fn live_can_extended_addressing() {
         dev.close();
     }
 
-    // --- FirmwareIsoTp with extended addressing (strips per RxStatus) ---
+    // --- firmware path with extended addressing (strips per RxStatus) ---
     {
         let dev = open_retrying(&port());
-        let mut tp = FirmwareIsoTp::with_ext_addr(&dev, tx, rx, ADDR).expect("fw ext channel");
+        let cfg = IsoTpConfig::new(tx, rx).with_ext_addr(ADDR);
+        let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware).expect("fw ext channel");
         let r = tp.request(&[0x21, 0x43], timeout).expect("21 43 ext");
         println!("firmware ext-addr 21 43 -> {r:02x?}");
         assert_eq!(r, [0x61, 0x43, 0x7b, 0x79], "ext-addr reply payload wrong (strip offset?)");
@@ -262,8 +277,8 @@ fn live_can_extended_addressing() {
     // --- host path with extended addressing ---
     {
         let dev = open_retrying(&port());
-        let mut tp =
-            IsoTp::new(&dev, IsoTpConfig::new(tx, rx).with_ext_addr(ADDR)).expect("host ext channel");
+        let cfg = IsoTpConfig::new(tx, rx).with_ext_addr(ADDR);
+        let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Host).expect("host ext channel");
         let r1 = tp.request(&[0x21, 0x43], timeout).expect("host 21 43 ext");
         println!("host ext-addr 21 43 -> {r1:02x?}");
         assert_eq!(r1, [0x61, 0x43, 0x7b, 0x79]);
@@ -287,7 +302,7 @@ fn live_can_extended_addressing() {
 #[test]
 #[ignore = "needs the cable + bench responder (set RMVCI_PORT)"]
 fn live_periodic_emission() {
-    use rmvci_core::{CanConfig, CanId, Can, CanFilter, DeviceStatus, Error};
+    use rmvci_core::{Can, CanConfig, CanFilter, CanId, DeviceStatus, Error};
 
     let dev = open_retrying(&port());
     let mut ch = dev.connect::<Can>(CanConfig::default()).expect("connect CAN");
@@ -488,7 +503,7 @@ fn live_idle_decay_characterisation() {
 /// The probe prints the verdict; this side only has to transmit.
 #[cfg(feature = "serial")]
 fn send_multiframe_for_probe(host_path: bool) {
-    use rmvci_core::{CanId, FirmwareIsoTp, IsoTp, IsoTpConfig};
+    use rmvci_core::{CanId, IsoTp, IsoTpConfig, IsoTpPath};
 
     let tx = CanId::Std(0x7c4);
     let rx = CanId::Std(0x7cc);
@@ -498,13 +513,15 @@ fn send_multiframe_for_probe(host_path: bool) {
 
     let dev = open_retrying(&port());
     if host_path {
-        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx)).expect("host channel");
+        let mut tp =
+            IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Host).expect("host channel");
         match tp.send(&payload) {
             Ok(()) => println!("host path: sent {} bytes", payload.len()),
             Err(e) => println!("host path: send ended with {e}"),
         }
     } else {
-        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel");
+        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Firmware)
+            .expect("firmware channel");
         match tp.send(&payload) {
             Ok(()) => println!("firmware path: sent {} bytes", payload.len()),
             Err(e) => println!("firmware path: send ended with {e}"),
@@ -564,7 +581,7 @@ fn smoke_open_version_survives_idle() {
 #[ignore = "needs the cable + /dev/bus/usb access (set RMVCI_USB_SERIAL)"]
 fn usb_backend_end_to_end() {
     use rmvci_core::transport::{LatencyResult, Transport};
-    use rmvci_core::{CanId, DeviceConfig, FirmwareIsoTp, IsoTp, IsoTpConfig};
+    use rmvci_core::{CanId, DeviceConfig, IsoTp, IsoTpConfig, IsoTpPath};
 
     let serial = std::env::var("RMVCI_USB_SERIAL").ok();
 
@@ -589,7 +606,8 @@ fn usb_backend_end_to_end() {
     let rx = CanId::Std(0x7cc);
     let timeout = Duration::from_secs(3);
 
-    let mut fw = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel");
+    let mut fw =
+        IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Firmware).expect("firmware channel");
     let a = fw.request(&[0x21, 0x43], timeout).expect("21 43 over USB");
     println!("usb/firmware 21 43 -> {a:02x?}");
     assert_eq!(a, [0x61, 0x43, 0x7b, 0x79]);
@@ -598,7 +616,8 @@ fn usb_backend_end_to_end() {
 
     let dev =
         Device::open_usb(serial.as_deref(), DeviceConfig::default()).expect("reopen over USB");
-    let mut host = IsoTp::new(&dev, IsoTpConfig::new(tx, rx)).expect("host channel");
+    let mut host =
+        IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Host).expect("host channel");
     let b = host.request(&[0x21, 0x44], timeout).expect("21 44 over USB");
     println!("usb/host     21 44 -> {} bytes", b.len());
     assert_eq!(b.len(), 40);
@@ -621,7 +640,7 @@ fn usb_backend_end_to_end() {
 #[test]
 #[ignore = "needs the cable + bench responder; compares tty vs USB"]
 fn usb_vs_serial_latency() {
-    use rmvci_core::{CanId, DeviceConfig, FirmwareIsoTp, UdsTransport};
+    use rmvci_core::{CanId, DeviceConfig, IsoTp, IsoTpConfig, IsoTpPath, UdsTransport};
 
     const N: usize = 40;
     let tx = CanId::Std(0x7c4);
@@ -648,7 +667,8 @@ fn usb_vs_serial_latency() {
 
     let serial_median = {
         let dev = open_retrying(&port());
-        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel over tty");
+        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Firmware)
+            .expect("firmware channel over tty");
         let r = time_exchanges(&mut tp);
         drop(tp);
         dev.close();
@@ -659,7 +679,8 @@ fn usb_vs_serial_latency() {
         let serial = std::env::var("RMVCI_USB_SERIAL").ok();
         let dev =
             Device::open_usb(serial.as_deref(), DeviceConfig::default()).expect("open over USB");
-        let mut tp = FirmwareIsoTp::new(&dev, tx, rx).expect("firmware channel over USB");
+        let mut tp = IsoTp::new(&dev, IsoTpConfig::new(tx, rx), IsoTpPath::Firmware)
+            .expect("firmware channel over USB");
         let r = time_exchanges(&mut tp);
         report("usb", r)
     };

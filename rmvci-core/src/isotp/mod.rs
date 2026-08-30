@@ -1,18 +1,17 @@
-//! ISO 15765-2 transport, both ways the cable can do it:
+//! ISO 15765-2 transport: one [`IsoTp`] type, run on either [`IsoTpPath`].
 //!
-//! - [`IsoTp`] — **host-side**, over a raw CAN channel (protocol 5). The
-//!   machines in [`machine`] do segmentation and flow control correctly:
-//!   full 12-bit FF_DL, BS honored, STmin honored, FS=WAIT/OVFLW handled.
-//!   Correct but slow: every frame is a serial round trip (~20–35 ms at the
-//!   FTDI default 16 ms latency timer; fix the timer for ~2–4× throughput).
-//! - [`FirmwareIsoTp`] — the cable firmware's ISO-TP (protocol 6),
-//!   bench-validated for single-frame requests and multi-frame *receive*.
-//!   Its transmit path ignores BS/STmin and breaks above 255 bytes, so
-//!   [`FirmwareIsoTp::send`] refuses larger payloads with
+//! - [`IsoTpPath::Firmware`] (protocol 6) — the cable's own ISO-TP, one
+//!   exchange per request. Bench-validated for single-frame requests and
+//!   multi-frame *receive*; its transmit path ignores BS/STmin and breaks above
+//!   255 bytes, so [`IsoTp::send`] refuses larger payloads with
 //!   [`IsoTpError::FirmwareFfDlLimit`] rather than emit a malformed frame.
+//! - [`IsoTpPath::Host`] (protocol 5) — the machines in [`machine`] over raw
+//!   CAN: full 12-bit FF_DL, BS and STmin honoured, FS=WAIT/OVFLW handled.
+//!   Correct but slow, one serial round trip per CAN frame.
 //!
-//! Both implement [`UdsTransport`], so application code (and the bench
-//! comparison) flips between them with a flag.
+//! The cable has a single global receive owner, so a device runs one path at
+//! a time. [`IsoTp`] implements [`UdsTransport`], so application code flips
+//! between the paths with one argument.
 
 pub mod machine;
 
@@ -68,25 +67,51 @@ pub trait UdsTransport {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error>;
 }
 
+/// Which side of the cable runs ISO 15765-2.
+///
+/// The cable has a single global receive owner, so one [`IsoTp`] exists per
+/// device at a time, on one path or the other — never both.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IsoTpPath {
+    /// The cable firmware segments and reassembles (protocol 6). One serial
+    /// exchange per request — the fast path, and the default. Two firmware
+    /// limits apply: transmit above 255 bytes is malformed (so
+    /// [`IsoTp::send`] refuses it with [`IsoTpError::FirmwareFfDlLimit`]) and
+    /// the ECU's flow-control BS/STmin are ignored.
+    #[default]
+    Firmware,
+    /// This crate segments and reassembles over a raw CAN channel (protocol 5)
+    /// using [`machine`]: full 12-bit FF_DL to 4095 bytes, BS and STmin
+    /// honoured, FS=WAIT/OVFLW handled. Correct but slow: every CAN frame is a
+    /// serial round trip (~20–35 ms at the FTDI default 16 ms latency timer).
+    Host,
+}
+
+/// Endpoints and timing for an [`IsoTp`] channel.
 #[derive(Debug, Clone, Copy)]
 pub struct IsoTpConfig {
+    /// Identifier we transmit on.
     pub tx_id: CanId,
+    /// Identifier the ECU answers (and sends flow control) on.
     pub rx_id: CanId,
+    /// Bus bitrate and connect flags (default 500 kbit/s).
+    pub can: CanConfig,
     /// Block size we advertise when receiving (0 = unlimited). The adapter's
     /// RX ring holds ~1500 bytes (~100 frames); advertise 16 for very long
-    /// responses if polling can't keep up.
+    /// responses if polling can't keep up. Host path only.
     pub rx_bs: u8,
-    /// STmin byte we advertise when receiving.
+    /// STmin byte we advertise when receiving. Host path only.
     pub rx_stmin: u8,
     /// Frame padding byte; Toyota expects padded frames. `None` sends
-    /// unpadded (note the firmware pads its own transmissions regardless on
-    /// protocol 6 — this only affects the host path).
+    /// unpadded. Host path only — the firmware pads its own transmissions
+    /// regardless.
     pub padding: Option<u8>,
     /// How long to wait for the ECU's flow control after a First Frame.
+    /// Host path only.
     pub n_bs: Duration,
-    /// Max gap between the ECU's consecutive frames.
+    /// Max gap between the ECU's consecutive frames. Host path only.
     pub n_cr: Duration,
-    /// How many FS=WAIT frames to tolerate before giving up.
+    /// How many FS=WAIT frames to tolerate before giving up. Host path only.
     pub wft_max: u8,
     /// Extended/mixed addressing byte. When set, every frame carries it ahead
     /// of the PCI (usable data per frame drops by one) and the receive filter
@@ -95,10 +120,13 @@ pub struct IsoTpConfig {
 }
 
 impl IsoTpConfig {
+    /// Defaults: 500 kbit/s, `0x00` padding, unlimited receive block size,
+    /// 1 s N_Bs / N_Cr, normal addressing.
     pub fn new(tx_id: CanId, rx_id: CanId) -> Self {
         Self {
             tx_id,
             rx_id,
+            can: CanConfig::default(),
             rx_bs: 0,
             rx_stmin: 0,
             padding: Some(0x00),
@@ -114,39 +142,63 @@ impl IsoTpConfig {
         self.ext_addr = Some(addr);
         self
     }
+
+    /// Bus bitrate / connect flags other than the 500 kbit/s default.
+    pub fn with_can(mut self, can: CanConfig) -> Self {
+        self.can = can;
+        self
+    }
 }
 
-/// Host-side ISO-TP over a raw CAN channel.
+/// ISO 15765-2 over the cable, on either [`IsoTpPath`].
+///
+/// ```no_run
+/// use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
+/// use std::time::Duration;
+///
+/// # fn main() -> Result<(), rmvci_core::Error> {
+/// let dev = Device::open("/dev/ttyUSB0")?;
+/// let cfg = IsoTpConfig::new(CanId::Std(0x7e0), CanId::Std(0x7e8));
+/// let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
+/// let vin = tp.request(&[0x22, 0xf1, 0x90], Duration::from_secs(2))?;
+/// # Ok(()) }
+/// ```
 pub struct IsoTp {
-    chan: Channel<Can>,
+    chan: PathChannel,
     cfg: IsoTpConfig,
 }
 
+enum PathChannel {
+    Firmware(Channel<Iso15765>),
+    Host(Channel<Can>),
+}
+
 impl IsoTp {
-    /// Connect protocol 5 at 500 kbit/s and install an exact PASS filter on
-    /// `rx_id` — flow control arrives on the same identifier, so one filter
-    /// covers data and FC.
-    pub fn new(dev: &Device, cfg: IsoTpConfig) -> Result<Self, Error> {
-        Self::with_bitrate(dev, cfg, CanConfig::default())
+    /// Connect the bus and install the exact receive filter for `cfg.rx_id`.
+    ///
+    /// On the host path one PASS filter on `rx_id` covers both data and flow
+    /// control (they arrive on the same identifier); on the firmware path it
+    /// is the firmware's flow-control filter, with the address byte when
+    /// `ext_addr` is set.
+    pub fn new(dev: &Device, cfg: IsoTpConfig, path: IsoTpPath) -> Result<Self, Error> {
+        let mut tp = match path {
+            IsoTpPath::Firmware => Self { chan: PathChannel::Firmware(dev.connect(cfg.can)?), cfg },
+            IsoTpPath::Host => Self::connect_deferred(dev, cfg)?,
+        };
+        tp.install_filter()?;
+        Ok(tp)
     }
 
-    pub fn with_bitrate(dev: &Device, cfg: IsoTpConfig, can: CanConfig) -> Result<Self, Error> {
-        let mut chan = dev.connect::<Can>(can)?;
-        chan.set_filter(CanFilter::exact(cfg.rx_id))?;
-        Ok(Self { chan, cfg })
-    }
-
-    /// Connect the raw-CAN channel **without** installing a filter yet, for
+    /// Connect a **host-path** channel without installing a filter yet, for
     /// callers whose endpoints arrive after the connect (the J2534 shim, which
     /// learns `rx`/`tx` from a later flow-control filter). Call
     /// [`IsoTp::set_endpoints`] before `send`/`recv`.
-    pub fn connect_deferred(dev: &Device, cfg: IsoTpConfig, can: CanConfig) -> Result<Self, Error> {
-        let chan = dev.connect::<Can>(can)?;
-        Ok(Self { chan, cfg })
+    pub fn connect_deferred(dev: &Device, cfg: IsoTpConfig) -> Result<Self, Error> {
+        Ok(Self { chan: PathChannel::Host(dev.connect(cfg.can)?), cfg })
     }
 
-    /// Set (or change) the endpoints and reinstall the exact rx filter. This is
-    /// how the deferred-connect path becomes usable, and how a channel is
+    /// Set (or change) the endpoints and reinstall the receive filter. This is
+    /// how a deferred-connect channel becomes usable, and how a channel is
     /// repointed at a different ECU.
     pub fn set_endpoints(
         &mut self,
@@ -157,13 +209,113 @@ impl IsoTp {
         self.cfg.tx_id = tx_id;
         self.cfg.rx_id = rx_id;
         self.cfg.ext_addr = ext_addr;
-        self.chan.set_filter(CanFilter::exact(rx_id))
+        self.install_filter()
+    }
+
+    fn install_filter(&mut self) -> Result<(), Error> {
+        match &mut self.chan {
+            PathChannel::Host(chan) => chan.set_filter(CanFilter::exact(self.cfg.rx_id)),
+            PathChannel::Firmware(chan) => {
+                let filter = FlowControlFilter::exact(self.cfg.rx_id, self.cfg.tx_id);
+                let filter = match self.cfg.ext_addr {
+                    Some(a) => filter.with_ext_addr(a),
+                    None => filter,
+                };
+                chan.set_filter(filter)
+            }
+        }
+    }
+
+    /// Which side is running ISO-TP.
+    pub fn path(&self) -> IsoTpPath {
+        match self.chan {
+            PathChannel::Firmware(_) => IsoTpPath::Firmware,
+            PathChannel::Host(_) => IsoTpPath::Host,
+        }
     }
 
     /// The response identifier this client reassembles from (for the shim to
     /// prefix onto a J2534 read message).
     pub fn rx_id(&self) -> CanId {
         self.cfg.rx_id
+    }
+
+    /// Send one ISO-TP message, segmented as the path allows.
+    ///
+    /// On the firmware path payloads above 255 bytes are refused with
+    /// [`IsoTpError::FirmwareFfDlLimit`]: the firmware writes the First Frame
+    /// length as `len & 0xFF` with a literal `0x10` high nibble, so they would
+    /// go out malformed. Use [`IsoTpPath::Host`] for those.
+    pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
+        match &mut self.chan {
+            PathChannel::Host(_) => self.host_send(payload),
+            PathChannel::Firmware(chan) => {
+                // With extended addressing the firmware expects the address
+                // byte at the head of the payload (it lands at msg[4] on the
+                // wire, before the PCI) and segments from there.
+                let (buf, flags) = match self.cfg.ext_addr {
+                    Some(a) => {
+                        let mut b = Vec::with_capacity(1 + payload.len());
+                        b.push(a);
+                        b.extend_from_slice(payload);
+                        (b, TxFlags::ISO15765_ADDR_TYPE)
+                    }
+                    None => (payload.to_vec(), TxFlags::default()),
+                };
+                if buf.len() > 255 {
+                    return Err(IsoTpError::FirmwareFfDlLimit(buf.len()).into());
+                }
+                chan.send_flags(self.cfg.tx_id, &buf, flags)
+            }
+        }
+    }
+
+    /// Receive one reassembled ISO-TP message from `rx_id`.
+    pub fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
+        match &mut self.chan {
+            PathChannel::Host(_) => self.host_recv(timeout),
+            PathChannel::Firmware(chan) => loop {
+                let m = chan.read(timeout)?;
+                if m.data.len() > 4 && m.data[..4] == self.cfg.rx_id.to_wire() {
+                    let body = &m.data[4..];
+                    // With extended addressing the firmware flags the reply
+                    // with RxStatus 0x80 and (RE-derived — confirm on the
+                    // bench) leaves the address byte at the head of the
+                    // reassembled payload; strip it. If the flag is absent,
+                    // hand back the body as-is.
+                    let start = usize::from(
+                        self.cfg.ext_addr.is_some()
+                            && m.rx_status.contains(RxStatus::ADDR_TYPE)
+                            && !body.is_empty(),
+                    );
+                    return Ok(body[start..].to_vec());
+                }
+                // A frame from some other identifier slipping through means
+                // the filter isn't what we think it is; keep waiting rather
+                // than hand back someone else's payload.
+            },
+        }
+    }
+
+    /// Send then receive, swallowing `7F .. 78` responsePending frames.
+    ///
+    /// On the host path `send` may consume frames from the response identifier
+    /// while waiting for flow control, and discards any that are not flow
+    /// control. That only matters if an ECU starts answering before it has
+    /// received the whole multi-frame request, which ISO 15765-2 does not
+    /// allow.
+    pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
+        self.send(req)?;
+        drain_pending(|| self.recv(timeout))
+    }
+
+    // ---- host path: the machines in `machine` driven over raw CAN ----
+
+    fn host_chan(&mut self) -> &mut Channel<Can> {
+        match &mut self.chan {
+            PathChannel::Host(chan) => chan,
+            PathChannel::Firmware(_) => unreachable!("host_* called on the firmware path"),
+        }
     }
 
     /// Frames from the response identifier, indications skipped.
@@ -174,14 +326,15 @@ impl IsoTp {
     /// `rx_bs` exists: on a very long response, advertise a block size
     /// rather than let the ECU outrun the drain.
     fn poll_frame(&mut self, budget: Duration) -> Result<Option<RxMsg>, Error> {
-        match self.chan.poll(budget)? {
+        let cfg = self.cfg;
+        match self.host_chan().poll(budget)? {
             Some(m)
                 if !m.is_indication()
                     && m.data.len() > 4
-                    && m.data[..4] == self.cfg.rx_id.to_wire()
+                    && m.data[..4] == cfg.rx_id.to_wire()
                     // Raw CAN cannot hardware-filter on the address byte, so
                     // discriminate it here when extended addressing is on.
-                    && self.cfg.ext_addr.is_none_or(|a| m.data.get(4) == Some(&a)) =>
+                    && cfg.ext_addr.is_none_or(|a| m.data.get(4) == Some(&a)) =>
             {
                 Ok(Some(m))
             }
@@ -189,17 +342,13 @@ impl IsoTp {
         }
     }
 
-    pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
-        let mut tx = TxMachine::with_addr(
-            payload,
-            self.cfg.padding,
-            self.cfg.n_bs,
-            self.cfg.wft_max,
-            self.cfg.ext_addr,
-        )?;
+    fn host_send(&mut self, payload: &[u8]) -> Result<(), Error> {
+        let cfg = self.cfg;
+        let mut tx =
+            TxMachine::with_addr(payload, cfg.padding, cfg.n_bs, cfg.wft_max, cfg.ext_addr)?;
         loop {
             match tx.next(Instant::now())? {
-                TxAction::Send(frame) => self.chan.send(self.cfg.tx_id, &frame)?,
+                TxAction::Send(frame) => self.host_chan().send(cfg.tx_id, &frame)?,
                 TxAction::WaitFc { deadline } => {
                     let now = Instant::now();
                     if now >= deadline {
@@ -221,14 +370,10 @@ impl IsoTp {
         }
     }
 
-    pub fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
-        let mut rx = RxMachine::with_addr(
-            self.cfg.rx_bs,
-            self.cfg.rx_stmin,
-            self.cfg.padding,
-            self.cfg.n_cr,
-            self.cfg.ext_addr,
-        );
+    fn host_recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
+        let cfg = self.cfg;
+        let mut rx =
+            RxMachine::with_addr(cfg.rx_bs, cfg.rx_stmin, cfg.padding, cfg.n_cr, cfg.ext_addr);
         let deadline = Instant::now() + timeout;
         loop {
             let now = Instant::now();
@@ -239,138 +384,18 @@ impl IsoTp {
             let budget = (deadline - now).min(Duration::from_millis(200));
             if let Some(m) = self.poll_frame(budget)? {
                 match rx.on_frame(&m.data[4..], Instant::now())? {
-                    RxEvent::SendFc(fc) => self.chan.send(self.cfg.tx_id, &fc)?,
+                    RxEvent::SendFc(fc) => self.host_chan().send(cfg.tx_id, &fc)?,
                     RxEvent::Done(payload) => return Ok(payload),
                     RxEvent::Continue => {}
                 }
             }
         }
     }
-
-    /// Send then receive.
-    ///
-    /// Note `send` may consume frames from the response identifier while
-    /// waiting for flow control, and discards any that are not flow control.
-    /// That only matters if an ECU starts answering before it has received
-    /// the whole multi-frame request, which ISO 15765-2 does not allow.
-    pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
-        self.send(req)?;
-        drain_pending(|| self.recv(timeout))
-    }
 }
 
 impl UdsTransport for IsoTp {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
         IsoTp::request(self, req, timeout)
-    }
-}
-
-/// The firmware's own ISO-TP (protocol 6) behind the same interface.
-pub struct FirmwareIsoTp {
-    chan: Channel<Iso15765>,
-    tx_id: CanId,
-    rx_id: CanId,
-    /// Extended/mixed addressing byte. The firmware inserts it per frame
-    /// itself; the host prepends it once to the whole payload and sets
-    /// `ISO15765_ADDR_TYPE`.
-    ext_addr: Option<u8>,
-}
-
-impl FirmwareIsoTp {
-    pub fn new(dev: &Device, tx_id: CanId, rx_id: CanId) -> Result<Self, Error> {
-        Self::configure(dev, tx_id, rx_id, CanConfig::default(), None)
-    }
-
-    pub fn with_bitrate(
-        dev: &Device,
-        tx_id: CanId,
-        rx_id: CanId,
-        can: CanConfig,
-    ) -> Result<Self, Error> {
-        Self::configure(dev, tx_id, rx_id, can, None)
-    }
-
-    /// Connect with extended/mixed addressing: the acceptance filter matches on
-    /// the 5th (address) byte, and every exchange carries `addr`.
-    pub fn with_ext_addr(
-        dev: &Device,
-        tx_id: CanId,
-        rx_id: CanId,
-        addr: u8,
-    ) -> Result<Self, Error> {
-        Self::configure(dev, tx_id, rx_id, CanConfig::default(), Some(addr))
-    }
-
-    fn configure(
-        dev: &Device,
-        tx_id: CanId,
-        rx_id: CanId,
-        can: CanConfig,
-        ext_addr: Option<u8>,
-    ) -> Result<Self, Error> {
-        let mut chan = dev.connect::<Iso15765>(can)?;
-        let filter = FlowControlFilter::exact(rx_id, tx_id);
-        let filter = match ext_addr {
-            Some(a) => filter.with_ext_addr(a),
-            None => filter,
-        };
-        chan.set_filter(filter)?;
-        Ok(Self { chan, tx_id, rx_id, ext_addr })
-    }
-
-    pub fn send(&mut self, payload: &[u8]) -> Result<(), Error> {
-        // With extended addressing the firmware expects the address byte at the
-        // head of the payload (it lands at msg[4] on the wire, before the PCI)
-        // and segments from there; without it the payload is sent as-is.
-        let (buf, flags) = match self.ext_addr {
-            Some(a) => {
-                let mut b = Vec::with_capacity(1 + payload.len());
-                b.push(a);
-                b.extend_from_slice(payload);
-                (b, TxFlags::ISO15765_ADDR_TYPE)
-            }
-            None => (payload.to_vec(), TxFlags::default()),
-        };
-        // The firmware writes the First Frame length as `len & 0xFF` with a
-        // literal 0x10 high nibble, so anything above 255 bytes goes out
-        // malformed. Refuse it here; the host path handles large sends.
-        if buf.len() > 255 {
-            return Err(IsoTpError::FirmwareFfDlLimit(buf.len()).into());
-        }
-        self.chan.send_flags(self.tx_id, &buf, flags)
-    }
-
-    pub fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, Error> {
-        loop {
-            let m = self.chan.read(timeout)?;
-            if m.data.len() > 4 && m.data[..4] == self.rx_id.to_wire() {
-                let body = &m.data[4..];
-                // With extended addressing the firmware flags the reply with
-                // RxStatus 0x80 and (RE-derived — confirm on the bench) leaves
-                // the address byte at the head of the reassembled payload;
-                // strip it. If the flag is absent, hand back the body as-is.
-                let start = usize::from(
-                    self.ext_addr.is_some()
-                        && m.rx_status.contains(RxStatus::ADDR_TYPE)
-                        && !body.is_empty(),
-                );
-                return Ok(body[start..].to_vec());
-            }
-            // A frame from some other identifier slipping through means the
-            // filter isn't what we think it is; keep waiting rather than
-            // hand back someone else's payload.
-        }
-    }
-
-    pub fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
-        self.send(req)?;
-        drain_pending(|| self.recv(timeout))
-    }
-}
-
-impl UdsTransport for FirmwareIsoTp {
-    fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error> {
-        FirmwareIsoTp::request(self, req, timeout)
     }
 }
 

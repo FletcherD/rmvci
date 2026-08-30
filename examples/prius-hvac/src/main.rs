@@ -20,22 +20,13 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use rmvci_core::{
-    CanId, Device, DeviceConfig, Error, FirmwareIsoTp, IsoTp, IsoTpConfig, UdsTransport,
-    resolve_port,
-};
+use rmvci_core::{CanId, Device, DeviceConfig, Error, IsoTp, IsoTpConfig, IsoTpPath, resolve_port};
 
 /// A/C amplifier request / response identifiers.
 const ECU_TX: u16 = 0x7c4;
 const ECU_RX: u16 = 0x7cc;
 /// Air outlet servo (blend / air-mix) local identifier.
 const LID_AIR_OUTLET_SERVO: u8 = 0x43;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IsoTpPath {
-    Firmware,
-    Host,
-}
 
 struct Args {
     port: Option<String>,
@@ -96,10 +87,7 @@ fn run() -> Result<(), Error> {
 
     let tx = CanId::Std(ECU_TX);
     let rx = CanId::Std(ECU_RX);
-    let mut transport: Box<dyn UdsTransport> = match args.isotp {
-        IsoTpPath::Firmware => Box::new(FirmwareIsoTp::new(&dev, tx, rx)?),
-        IsoTpPath::Host => Box::new(IsoTp::new(&dev, IsoTpConfig::new(tx, rx))?),
-    };
+    let mut transport = IsoTp::new(&dev, IsoTpConfig::new(tx, rx), args.isotp)?;
 
     let request = [0x21, LID_AIR_OUTLET_SERVO];
     loop {

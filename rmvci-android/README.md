@@ -126,6 +126,6 @@ when {
 - The latency-timer control transfer in `JniTransport::optimize_latency` is
   written against `UsbDeviceConnection.controlTransfer` but unverified; if it
   fails the driver logs and continues at the 16 ms default.
-- Only `FirmwareIsoTp` is exposed. The host-side ISO-TP path works equally
+- Only `IsoTpPath::Firmware` is exposed. The host-side path works equally
   well over this transport but has no JNI entry point yet — worth adding if
   you hit an ECU that means what it says with flow-control block size.
