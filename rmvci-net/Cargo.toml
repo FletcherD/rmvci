@@ -5,21 +5,28 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["j2534", "obd-ii", "automotive", "mini-vci", "remote"]
+categories = ["hardware-support", "network-programming"]
 
 [features]
 default = []
 # The phone-side `rmvci-bridge` binary owns the real cable, so it needs the
 # concrete backends from rmvci-core (USB via nusb, and/or ftdi_sio serial).
 bridge = ["rmvci-core/serial", "rmvci-core/usb", "dep:tracing-subscriber"]
-# The PC-side demo clients `rmvci-remote` and `prius-kline`.
+# The PC-side link demo `rmvci-remote`. (The hands-on diagnostic apps `diag-cmd`
+# and `diag-scan` now live in the standalone `tsdiag` crate, which drives any
+# transport, not just this TCP bridge.)
 client = ["dep:tracing-subscriber", "dep:rmvci-diag"]
 
 [dependencies]
 # default-features off: the library half (TcpTransport + serve) only needs the
 # always-compiled Transport trait; backends are pulled in by the `bridge`
 # feature for the bridge binary alone.
-rmvci-core = { path = "../rmvci-core", default-features = false }
-rmvci-diag = { path = "../rmvci-diag", optional = true }
+rmvci-core = { version = "0.1.0", path = "../rmvci-core", default-features = false }
+rmvci-diag = { version = "0.1.0", path = "../rmvci-diag", optional = true }
 tracing = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
 
@@ -29,14 +36,6 @@ required-features = ["bridge"]
 
 [[bin]]
 name = "rmvci-remote"
-required-features = ["client"]
-
-[[bin]]
-name = "prius-kline"
-required-features = ["client"]
-
-[[bin]]
-name = "diag-cmd"
 required-features = ["client"]
 
 # Host-side J2534 RPC server for the Techstream forwarding shim. Uses only the

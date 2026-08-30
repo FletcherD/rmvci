@@ -4,8 +4,12 @@
 //! it shows them, so you can watch a slow service (e.g. DTC read `18`) stream
 //! pending frames and finally answer. Read-only diagnostic tool.
 //!
-//! Usage: kraw <bridge-addr> <ecu-hex> <req hex bytes…>
-//!   kraw 192.168.1.207:6979 98 18 00 ff 00
+//! Usage:
+//!
+//! ```text
+//! kraw <bridge-addr> <ecu-hex> <req hex bytes…>
+//! kraw 192.168.1.207:6979 98 18 00 ff 00
+//! ```
 
 use std::time::{Duration, Instant};
 

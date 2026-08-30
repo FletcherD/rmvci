@@ -61,41 +61,13 @@ rmvci-remote 192.168.1.50:6979 --hvac       # then read CAN 7C4 / KWP 21 43
 rmvci-remote 192.168.1.50:6979 --hvac --watch --isotp host
 ```
 
-Real NHW20 Prius A/C client (K-line, addr `0x98` — the working car path, **proven
-live 2026-08-09**):
-
-```sh
-prius-kline 192.168.1.207:6979              # FAST_INIT 0x98, read the air-mix servo cluster
-```
-
-`prius-kline` is a thin app over the library: `rmvci_core::KLineEcu` runs the
-vendor K-line bring-up (12 SET_CONFIG timing params + header filter), FAST_INITs
-the amp, and frames ISO14230; `rmvci_diag::Kwp2000` does the `21 <LID>` reads and
-NRC 0x78 responsePending handling. The binary only adds the Prius A/C data-list
-scaling (air-mix damper actual `21 0D`/`21 0E`, commanded `21 13`/`21 14`, blower
-`21 1C`, ambient `21 02`). Frames/scales from the validated Techstream-DB
-extraction (`re/techstream/datalist_by_gen/datalist_P3_KWP.txt`).
-
-General diagnostic probe REPL (`diag-cmd`) — send arbitrary requests and sweep
-id ranges to discover what an ECU serves, on **either bus** (K-line ISO14230 or
-CAN ISO-TP), switchable at runtime:
-
-```sh
-diag-cmd 192.168.1.207:6979 [--ecu 98]        # start on K-line (default addr 0x98)
-diag-cmd 192.168.1.207:6979 --can 7e0 7e8     # start on CAN (tx / rx ids)
-diag-cmd 192.168.1.207:6979 --ecu 29 --session 81 --tp-each   # session-gated ECU
-# then, one command per line (or piped in):
-#   21 0d            raw request -> response (OK / NEGATIVE / raw bytes)
-#   sweep 21 00 ff   send 21 <id> for id 00..=ff, list the responders
-#   session 81       StartDiagnosticSession 10 81 (ABS/Body/Gateway/EMPS/Trans need it)
-#   tp               TesterPresent 3e 01 (session keepalive)
-#   kline 07         switch to a K-line ECU address (FAST_INIT)
-#   can 7e0 7e8      switch to a CAN ECU (ISO-TP tx / rx ids)
-#   init | help | quit
-# flags: --session <mode> sends 10 <mode> after bring-up; --tp-each sends 3e 01
-#        before every request to hold a session open.
-printf '21 02\ncan 7e0 7e8\n01 00\nquit\n' | diag-cmd 192.168.1.207:6979
-```
+The hands-on diagnostic apps `diag-cmd` (interactive REPL) and `diag-scan`
+(whole-vehicle live scan with real names + values) moved to the standalone
+[`tsdiag`](../../tsdiag/README.md) crate, which drives **any** transport — a
+local cable, USB, or this bridge — and decodes against the Techstream
+extraction. The A/C servo read (K-line `0x98`, proven live 2026-08-09) is now
+`diag-scan --transport <addr> --ecu A_C_P3.ddb --watch`. `diag-cmd` keeps the
+`--ecu`/`--can`/`--session`/`--tp-each` flags described below.
 
 Some K-line ECUs (A/C amp, Immobiliser) answer `21 <LID>` reads straight after
 FAST_INIT; others (ABS, Body, Gateway, EMPS, Transmission) answer only their

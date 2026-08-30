@@ -44,11 +44,13 @@ mod common;
 mod error;
 mod kwp2000;
 mod toyota;
+mod toyota_can;
 mod uds;
 
 pub use error::{Error, Result};
 pub use kwp2000::Kwp2000;
 pub use toyota::SID_TOYOTA_WRITE;
+pub use toyota_can::{EnumeratedPid, IsoTpChannel, ToyotaCanLive};
 pub use uds::Uds;
 
 /// Re-exported standard protocol definitions from [`automotive_diag`].

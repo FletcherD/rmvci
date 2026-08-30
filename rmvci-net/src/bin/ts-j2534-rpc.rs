@@ -10,8 +10,10 @@
 //!
 //! Wire protocol: see re/techstream/shim/FORWARD_PROTOCOL.md.
 //!
-//!   ts-j2534-rpc [PI_ADDR] [LISTEN_ADDR]
-//!   ts-j2534-rpc 192.168.1.207:6979 0.0.0.0:9600     (defaults)
+//! ```text
+//! ts-j2534-rpc [PI_ADDR] [LISTEN_ADDR]
+//! ts-j2534-rpc 192.168.1.207:6979 0.0.0.0:9600     (defaults)
+//! ```
 //!
 //! One shim connects at a time (Techstream = one DLL = one RPC client). Each new
 //! connection resets all state (fresh Device/channels).
@@ -747,8 +749,8 @@ impl<'a> Cursor<'a> {
     }
     fn u32(&mut self) -> u32 {
         let mut a = [0u8; 4];
-        for i in 0..4 {
-            a[i] = self.b.get(self.pos + i).copied().unwrap_or(0);
+        for (i, slot) in a.iter_mut().enumerate() {
+            *slot = self.b.get(self.pos + i).copied().unwrap_or(0);
         }
         self.pos += 4;
         u32::from_le_bytes(a)
