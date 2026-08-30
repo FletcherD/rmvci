@@ -58,7 +58,7 @@ fn negative_response_out_of_range() {
     let mut kwp = client([(vec![0x21, 0x99], vec![0x7f, 0x21, 0x31])]);
     let err = kwp.read_data_by_local_id(0x99).unwrap_err();
     assert!(err.is_request_out_of_range());
-    assert_eq!(format!("{err}").contains("0x31"), true);
+    assert!(format!("{err}").contains("0x31"));
 }
 
 #[test]

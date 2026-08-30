@@ -2,7 +2,7 @@
 
 Transport-agnostic **KWP2000 (ISO 14230-3)** and **UDS (ISO 14229-1)**
 diagnostic clients with the Toyota extensions recovered from Techstream, built
-on the [`rmvci-core`](../rmvci-core) `UdsTransport` seam.
+on the [`rmvci-core`](https://crates.io/crates/rmvci-core) `UdsTransport` seam.
 
 The same clients drive both Toyota diagnostic buses:
 

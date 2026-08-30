@@ -62,7 +62,8 @@ pub(crate) fn drain_pending(
 /// One request/response exchange — the shape UDS/KWP diagnostics need.
 ///
 /// Implementations transparently consume `7F .. 78` responsePending frames
-/// (see [`is_response_pending`]) and return the final application response.
+/// (`7F <sid> 78`, requestCorrectlyReceived-ResponsePending) and return the final
+/// application response.
 pub trait UdsTransport {
     fn request(&mut self, req: &[u8], timeout: Duration) -> Result<Vec<u8>, Error>;
 }

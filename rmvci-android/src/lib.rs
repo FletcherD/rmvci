@@ -251,7 +251,7 @@ struct Bridge {
 /// cable itself — it hands the same `JniTransport` (Java `UsbSerialPort` + its
 /// `UsbDeviceConnection`) to `serve`, so the PC runs the whole driver stack
 /// remotely. Keep `port`/`connection` open on the Java side for the bridge's
-/// lifetime; closing the port is how [`stopBridge`] unblocks an in-flight read.
+/// lifetime; closing the port is how `stopBridge` unblocks an in-flight read.
 ///
 /// Needs the app to hold `android.permission.INTERNET` (Android gates the
 /// AF_INET socket at the kernel via the `inet` group, native code included).

@@ -5,10 +5,15 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["uds", "kwp2000", "obd-ii", "automotive", "toyota"]
+categories = ["hardware-support", "embedded"]
 
 [dependencies]
 # Only the UdsTransport seam + Error are needed; no backend features.
-rmvci-core = { path = "../rmvci-core", default-features = false }
+rmvci-core = { version = "0.1.0", path = "../rmvci-core", default-features = false }
 # Standard KWP2000 / UDS service-id and NRC definitions (MIT/Apache).
 automotive_diag = { version = "0.1.28", default-features = false, features = ["kwp2000", "uds", "obd2"] }
 thiserror = "2"
@@ -16,4 +21,4 @@ thiserror = "2"
 [dev-dependencies]
 # Doctests reference Device::open (the serial backend); enabling it here keeps
 # the examples realistic without forcing a backend on downstream crates.
-rmvci-core = { path = "../rmvci-core", features = ["serial"] }
+rmvci-core = { version = "0.1.0", path = "../rmvci-core", features = ["serial"] }

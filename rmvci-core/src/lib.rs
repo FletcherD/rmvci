@@ -3,13 +3,14 @@
 //!
 //! Layering, bottom up:
 //! - [`codec`] — sans-IO wire protocol: framing, DES-ECB, inner commands.
-//! - `transport` — byte transports (serial port; mock for tests). *(M2)*
-//! - `session` — port-owning actor, handshake, channels. *(M2/M3)*
-//! - `isotp` — ISO 15765-2 over raw CAN (host-side) and via the firmware. *(M4)*
+//! - [`transport`] — byte transports (serial port, direct USB, JNI; mock for tests).
+//! - [`session`] — port-owning actor, handshake, typed channels.
+//! - [`isotp`] — ISO 15765-2 over raw CAN (host-side) and via the firmware.
+//! - [`kline`] — cooked ISO 14230 (K-line) ECU bring-up and request/response.
 //!
-//! Protocol behaviour is encoded from the firmware reverse engineering in the
-//! parent project's `re/FINDINGS.md`; all of it is bench-verified against the
-//! real cable.
+//! Protocol behaviour is encoded from a reverse-engineering of the cable's
+//! firmware, and all of it is bench-verified against the real cable; the
+//! captured vendor-DLL wire vectors in `tests/captured_vectors.rs` pin it.
 
 pub mod codec;
 pub mod error;
