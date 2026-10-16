@@ -103,7 +103,12 @@ fn keepalive_fires_when_idle_with_exact_bytes() {
     let events = mock.events();
 
     let _dev = Device::open_transport(mock, cfg(20)).expect("open");
-    std::thread::sleep(Duration::from_millis(150));
+    // Wait on the outcome, not a fixed sleep: slow CI timers (macOS runners)
+    // fit fewer 20 ms intervals into any fixed window.
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while MockTransport::writes(&events).len() < 5 && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     let writes = MockTransport::writes(&events);
     // Writes 0 and 1 are the handshake; everything after must be keepalives.

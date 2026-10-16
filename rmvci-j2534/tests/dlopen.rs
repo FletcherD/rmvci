@@ -10,7 +10,9 @@ fn cdylib_path() -> std::path::PathBuf {
     // tests run from target/<profile>/deps/<exe>; the cdylib sits one up.
     let exe = std::env::current_exe().unwrap();
     let dir = exe.parent().unwrap().parent().unwrap();
-    let p = dir.join("librmvci_j2534.so");
+    let name =
+        format!("{}rmvci_j2534{}", std::env::consts::DLL_PREFIX, std::env::consts::DLL_SUFFIX);
+    let p = dir.join(name);
     assert!(p.exists(), "cdylib not found at {p:?} — build the workspace first");
     p
 }

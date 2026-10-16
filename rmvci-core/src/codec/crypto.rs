@@ -10,7 +10,7 @@ use des::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
 pub fn encrypt_in_place(key: &[u8; 8], buf: &mut [u8]) {
     debug_assert_eq!(buf.len() % 8, 0);
     let des = Des::new(GenericArray::from_slice(key));
-    for block in buf.chunks_exact_mut(8) {
+    for block in buf.as_chunks_mut::<8>().0 {
         des.encrypt_block(GenericArray::from_mut_slice(block));
     }
 }
@@ -19,7 +19,7 @@ pub fn encrypt_in_place(key: &[u8; 8], buf: &mut [u8]) {
 pub fn decrypt_in_place(key: &[u8; 8], buf: &mut [u8]) {
     debug_assert_eq!(buf.len() % 8, 0);
     let des = Des::new(GenericArray::from_slice(key));
-    for block in buf.chunks_exact_mut(8) {
+    for block in buf.as_chunks_mut::<8>().0 {
         des.decrypt_block(GenericArray::from_mut_slice(block));
     }
 }
