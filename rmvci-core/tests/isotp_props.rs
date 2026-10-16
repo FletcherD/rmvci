@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use proptest::prelude::*;
-use rmvci_core::error::IsoTpError;
+use rmvci_core::IsoTpError;
 use rmvci_core::isotp::machine::{RxEvent, RxMachine, TxAction, TxMachine, decode_stmin};
 
 const N_BS: Duration = Duration::from_secs(1);

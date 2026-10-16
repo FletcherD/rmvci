@@ -1,6 +1,6 @@
 //! Raw K-line frame observer: FAST_INIT an ECU, send one request, then dump
 //! EVERY raw response frame (header-on) with elapsed time until the ECU goes
-//! quiet. Unlike `diag-cmd`, it does not drain `7F..78` responsePending frames —
+//! quiet. Unlike `KLineEcu::request`, it does not drain `7F..78` responsePending frames —
 //! it shows them, so you can watch a slow service (e.g. DTC read `18`) stream
 //! pending frames and finally answer. Read-only diagnostic tool.
 //!
@@ -8,12 +8,12 @@
 //!
 //! ```text
 //! kraw <bridge-addr> <ecu-hex> <req hex bytes…>
-//! kraw 192.168.1.207:6979 98 18 00 ff 00
+//! kraw 192.0.2.10:6979 98 18 00 ff 00
 //! ```
 
 use std::time::{Duration, Instant};
 
-use rmvci_core::{Device, DeviceConfig, Error, KLineEcu, KLINE_TIMING};
+use rmvci_core::{Device, DeviceConfig, Error, KLINE_TIMING, KLineEcu};
 use rmvci_net::TcpTransport;
 
 fn main() {
@@ -34,11 +34,16 @@ fn main() {
     // A sequence of requests separated by the literal token "then".
     let reqs: Vec<Vec<u8>> = args[2..]
         .split(|s| s == "then")
-        .map(|grp| grp.iter().map(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).expect("bad req hex")).collect())
+        .map(|grp| {
+            grp.iter()
+                .map(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).expect("bad req hex"))
+                .collect()
+        })
         .filter(|v: &Vec<u8>| !v.is_empty())
         .collect();
 
-    let dev = Device::open_transport(TcpTransport::connect(addr).unwrap(), DeviceConfig::default()).unwrap();
+    let dev = Device::open_transport(TcpTransport::connect(addr).unwrap(), DeviceConfig::default())
+        .unwrap();
     println!("firmware: {}", dev.firmware_version().unwrap());
     let mut e = match rate {
         Some(baud) => {
@@ -72,14 +77,21 @@ fn main() {
             match chan.read(Duration::from_millis(2000)) {
                 Ok(msg) => {
                     n += 1;
-                    println!("  [{:>6.0}ms] #{n:<3} {:02x?}", t0.elapsed().as_secs_f64() * 1000.0, msg.data);
+                    println!(
+                        "  [{:>6.0}ms] #{n:<3} {:02x?}",
+                        t0.elapsed().as_secs_f64() * 1000.0,
+                        msg.data
+                    );
                     if n >= 60 {
                         println!("  … capped at 60 frames");
                         break;
                     }
                 }
                 Err(Error::Timeout(_)) => {
-                    println!("  [{:>6.0}ms] quiet ({n} frame(s) total)", t0.elapsed().as_secs_f64() * 1000.0);
+                    println!(
+                        "  [{:>6.0}ms] quiet ({n} frame(s) total)",
+                        t0.elapsed().as_secs_f64() * 1000.0
+                    );
                     break;
                 }
                 Err(err) => {

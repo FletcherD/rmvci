@@ -5,10 +5,10 @@
 //! plugged into the remote host, not this one.
 //!
 //! ```sh
-//! rmvci-remote 192.168.1.50:6979              # open + print firmware version
-//! rmvci-remote 192.168.1.50:6979 --hvac       # then read 7C4 / KWP 21 43
-//! rmvci-remote 192.168.1.50:6979 --hvac --watch --isotp host
-//! RUST_LOG=rmvci_core=trace rmvci-remote 192.168.1.50:6979
+//! rmvci-remote 192.0.2.10:6979              # open + print firmware version
+//! rmvci-remote 192.0.2.10:6979 --hvac       # then read 7C4 / KWP 21 43
+//! rmvci-remote 192.0.2.10:6979 --hvac --watch --isotp host
+//! RUST_LOG=rmvci_core=trace rmvci-remote 192.0.2.10:6979
 //! ```
 //!
 //! `--hvac` targets CAN `7C4` (the bench ECU / newer models). The real NHW20

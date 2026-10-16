@@ -16,9 +16,7 @@ default = []
 # The phone-side `rmvci-bridge` binary owns the real cable, so it needs the
 # concrete backends from rmvci-core (USB via nusb, and/or ftdi_sio serial).
 bridge = ["rmvci-core/serial", "rmvci-core/usb", "dep:tracing-subscriber"]
-# The PC-side link demo `rmvci-remote`. (The hands-on diagnostic apps `diag-cmd`
-# and `diag-scan` now live in the standalone `tsdiag` crate, which drives any
-# transport, not just this TCP bridge.)
+# The PC-side link demo `rmvci-remote`.
 client = ["dep:tracing-subscriber", "dep:rmvci-diag"]
 
 [dependencies]
@@ -38,8 +36,3 @@ required-features = ["bridge"]
 name = "rmvci-remote"
 required-features = ["client"]
 
-# Host-side J2534 RPC server for the Techstream forwarding shim. Uses only the
-# always-compiled TcpTransport (client) + rmvci-core raw session — no backend
-# features, so it builds with a plain `cargo build`.
-[[bin]]
-name = "ts-j2534-rpc"

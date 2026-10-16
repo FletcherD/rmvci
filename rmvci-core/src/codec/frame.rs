@@ -76,7 +76,7 @@ pub fn decode_encrypted(key: &[u8; 8], frame: &[u8]) -> Result<Vec<u8>, CodecErr
         return Err(CodecError::LengthMismatch { field: rd_u16(frame), actual: frame.len() });
     }
     let plen = frame.len() - 3;
-    if plen == 0 || plen % 8 != 0 {
+    if plen == 0 || !plen.is_multiple_of(8) {
         return Err(CodecError::BadCipherLength(plen));
     }
 

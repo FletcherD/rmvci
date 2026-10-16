@@ -27,7 +27,9 @@ fn handshake_steps() -> Vec<Step> {
         Step::exchange(frame::encode_plain(&[]).unwrap(), Vec::new()),
         Step::exchange(
             frame::encode_plain(&inner::identify()).unwrap(),
-            vec![0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9],
+            vec![
+                0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9,
+            ],
         ),
     ]
 }
@@ -52,9 +54,18 @@ fn iso9141_typed_channel_writes_and_inits() {
 
     let (flags, baud) = (0x1000u32, 10_400u32); // KLineConfig::default()
     let mut steps = handshake_steps();
-    steps.push(Step::exchange(enc(&inner::connect(ProtocolId::Iso9141, flags, baud)), status_reply(0x07)));
-    steps.push(Step::exchange(enc(&inner::write_msg(ProtocolId::Iso9141, 0, &msg).unwrap()), status_reply(0x0a)));
-    steps.push(Step::exchange(enc(&inner::five_baud_init(ProtocolId::Iso9141, &[0x33])), enc(&init_reply)));
+    steps.push(Step::exchange(
+        enc(&inner::connect(ProtocolId::Iso9141, flags, baud)),
+        status_reply(0x07),
+    ));
+    steps.push(Step::exchange(
+        enc(&inner::write_msg(ProtocolId::Iso9141, 0, &msg).unwrap()),
+        status_reply(0x0a),
+    ));
+    steps.push(Step::exchange(
+        enc(&inner::five_baud_init(ProtocolId::Iso9141, &[0x33])),
+        enc(&init_reply),
+    ));
 
     let device = dev(steps);
     let mut chan = device.connect::<Iso9141>(KLineConfig::default()).expect("connect ISO9141");

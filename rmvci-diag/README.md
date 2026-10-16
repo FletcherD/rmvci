@@ -87,9 +87,8 @@ Both expose `send_raw(sid, data)` / `send(Command, data)` for anything not wrapp
 
 Toyota-specific service framing (`0x30`/`0x2F` active test, `0xA5`/`0x3B`/`0x2E`
 customize write, `0x12` freeze-frame, single-byte `0x21` LID reads) is grounded
-in the Techstream database reverse engineering under `re/techstream/`
-(`ghidra/notes_acttest.md`, `notes_dtc.md`, `notes_customize.md`,
-`notes_freezeframe.md`, and `datalist_by_gen/`).
+in reverse engineering of Techstream's diagnostic databases and DLLs, and in
+captures of Techstream driving a real vehicle.
 
 ## License
 

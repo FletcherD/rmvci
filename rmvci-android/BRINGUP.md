@@ -50,7 +50,7 @@ JNI calls need a JVM. An APK is the only way in.
 | Phone | moto g fast (`ZY22C6BVK8`), Android 11 / API 30, **arm64-v8a** |
 | USB host | `android.hardware.usb.host` present → OTG supported |
 | Root | no |
-| Phone WiFi | `192.168.1.235` |
+| Phone WiFi | `<phone-ip>` |
 | Rust target | `aarch64-linux-android` installed, compiles clean |
 
 `cargo-ndk` is **not** installed. `gradle` and `kotlinc` are not on `PATH`
@@ -122,7 +122,7 @@ the bench ECU.
 
 **The bench rig still works with the phone as host.** It is independent of
 what drives the Mini-VCI: phone → Mini-VCI → OBD pins 6/14 → the CH340
-analyzer on the desktop running `re/bench/isotp_responder.py`. So a full
+analyzer on the desktop running `bench/isotp_responder.py`. So a full
 end-to-end `21 43` is testable on the phone without the car.
 
 ```sh
@@ -137,7 +137,7 @@ returns `61 43 7b 79`, matching what both desktop transports return.
 
 1. **The phone has one USB port and the cable will occupy it.** adb-over-USB
    dies the moment you attach the Mini-VCI. Switch to WiFi *while still
-   wired*: `adb tcpip 5555` then `adb connect 192.168.1.235:5555`, then unplug.
+   wired*: `adb tcpip 5555` then `adb connect <phone-ip>:5555`, then unplug.
 2. **The default JDK is 26 and no AGP accepts it.** Point `JAVA_HOME` at
    `/usr/lib/jvm/java-21-openjdk-amd64` for anything Gradle. Tier 1 via
    `javac`/`d8` sidesteps this.

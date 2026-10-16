@@ -13,6 +13,8 @@
 //! a time. [`IsoTp`] implements [`UdsTransport`], so application code flips
 //! between the paths with one argument.
 
+/// Not part of the stable API: exposed for property tests and fuzzing.
+#[doc(hidden)]
 pub mod machine;
 
 use std::time::{Duration, Instant};
@@ -72,6 +74,7 @@ pub trait UdsTransport {
 /// The cable has a single global receive owner, so one [`IsoTp`] exists per
 /// device at a time, on one path or the other — never both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum IsoTpPath {
     /// The cable firmware segments and reassembles (protocol 6). One serial
     /// exchange per request — the fast path, and the default. Two firmware

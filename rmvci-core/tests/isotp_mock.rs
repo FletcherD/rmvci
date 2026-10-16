@@ -1,5 +1,5 @@
 //! End-to-end ISO-TP client tests over MockTransport — the offline version
-//! of the bench scenario (`re/bench/isotp_responder.py`): `21 43` single
+//! of the bench scenario (`bench/isotp_responder.py`): `21 43` single
 //! frame and `21 44` 40-byte multi-frame, on both the host path (raw CAN +
 //! host machines) and the firmware path (protocol 6).
 

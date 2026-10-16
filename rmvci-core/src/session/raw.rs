@@ -183,8 +183,9 @@ impl RawChannel {
     /// K-line FIVE_BAUD_INIT (slow init); returns the ECU key bytes, like
     /// [`RawChannel::fast_init`]. Used by ISO9141 and older KWP sessions.
     pub fn five_baud_init(&mut self, init: &[u8]) -> Result<Vec<u8>, Error> {
-        let resp =
-            self.dev.transact(inner::five_baud_init(self.proto, init), Duration::from_millis(3000))?;
+        let resp = self
+            .dev
+            .transact(inner::five_baud_init(self.proto, init), Duration::from_millis(3000))?;
         Self::parse_init_reply(&resp)
     }
 
@@ -192,9 +193,8 @@ impl RawChannel {
     /// The reply layout is RE-derived and not yet hardware-confirmed; see
     /// [`inner::parse_get_config`].
     pub fn get_config(&mut self, param: u32) -> Result<u32, Error> {
-        let resp = self
-            .dev
-            .transact(inner::get_config(self.proto, param), Duration::from_millis(2000))?;
+        let resp =
+            self.dev.transact(inner::get_config(self.proto, param), Duration::from_millis(2000))?;
         Ok(inner::parse_get_config(&resp)?)
     }
 
@@ -203,8 +203,7 @@ impl RawChannel {
     /// cables return a real reading. The reply layout is RE-derived and not yet
     /// hardware-confirmed; see [`inner::parse_vbatt`].
     pub fn read_vbatt(&mut self) -> Result<u32, Error> {
-        let resp =
-            self.dev.transact(inner::read_vbatt(self.proto), Duration::from_millis(1000))?;
+        let resp = self.dev.transact(inner::read_vbatt(self.proto), Duration::from_millis(1000))?;
         Ok(inner::parse_vbatt(&resp)?)
     }
 

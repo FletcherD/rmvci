@@ -20,7 +20,7 @@ use std::net::TcpListener;
 use std::process::ExitCode;
 
 use rmvci_core::transport::{SerialTransport, UsbTransport};
-use rmvci_net::{serve, DEFAULT_PORT};
+use rmvci_net::{DEFAULT_PORT, serve};
 
 enum Backend {
     Usb(Option<String>),
@@ -32,8 +32,7 @@ struct Args {
     listen: String,
 }
 
-const USAGE: &str =
-    "usage: rmvci-bridge [--usb [SERIAL] | --serial PATH] [--listen ADDR:PORT]";
+const USAGE: &str = "usage: rmvci-bridge [--usb [SERIAL] | --serial PATH] [--listen ADDR:PORT]";
 
 fn parse_args() -> Result<Args, String> {
     let mut backend = Backend::Usb(None);
@@ -61,8 +60,8 @@ fn parse_args() -> Result<Args, String> {
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let listener = TcpListener::bind(&args.listen)
-        .map_err(|e| format!("bind {}: {e}", args.listen))?;
+    let listener =
+        TcpListener::bind(&args.listen).map_err(|e| format!("bind {}: {e}", args.listen))?;
     tracing::info!(listen = %args.listen, "rmvci-bridge listening");
 
     // Open the cable once; `serve` reuses it across sequential clients.
@@ -75,8 +74,8 @@ fn run() -> Result<(), String> {
         }
         Backend::Serial(path) => {
             tracing::info!(%path, "opening cable over ftdi_sio serial");
-            let io = SerialTransport::open(&path)
-                .map_err(|e| format!("open serial {path}: {e}"))?;
+            let io =
+                SerialTransport::open(&path).map_err(|e| format!("open serial {path}: {e}"))?;
             serve(listener, io).map_err(|e| e.to_string())
         }
     }

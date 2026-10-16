@@ -191,7 +191,8 @@ impl Transport for JniTransport {
     fn set_modem(&mut self, dtr: bool, rts: bool) -> Result<(), TransportError> {
         let mut env = self.env()?;
         for (method, value) in [("setDTR", dtr), ("setRTS", rts)] {
-            if let Err(e) = env.call_method(&self.port, method, "(Z)V", &[JValue::Bool(value as u8)])
+            if let Err(e) =
+                env.call_method(&self.port, method, "(Z)V", &[JValue::Bool(value as u8)])
             {
                 let _ = env.exception_clear();
                 return Err(jerr(e, method));

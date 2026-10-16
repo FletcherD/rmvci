@@ -43,7 +43,10 @@ mod tests {
     #[test]
     fn positive_strips_sid() {
         assert_eq!(parse_positive(0x21, vec![0x61, 0x0d, 0x09]).unwrap(), vec![0x0d, 0x09]);
-        assert_eq!(parse_positive(0x22, vec![0x62, 0x01, 0x43, 0x7b]).unwrap(), vec![0x01, 0x43, 0x7b]);
+        assert_eq!(
+            parse_positive(0x22, vec![0x62, 0x01, 0x43, 0x7b]).unwrap(),
+            vec![0x01, 0x43, 0x7b]
+        );
     }
 
     #[test]

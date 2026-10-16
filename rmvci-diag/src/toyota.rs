@@ -9,7 +9,7 @@ use crate::kwp2000::Kwp2000;
 
 /// Toyota proprietary customize-write service id (`A5 <LID> <value>`), used by
 /// ECUs whose customize descriptor is `0x11` (legacy KWP). Not part of ISO
-/// 14230; see `re/techstream/ghidra/notes_customize.md`.
+/// 14230; recovered from Techstream's customize handlers.
 pub const SID_TOYOTA_WRITE: u8 = 0xa5;
 
 impl<T: UdsTransport> Kwp2000<T> {

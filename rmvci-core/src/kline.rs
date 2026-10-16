@@ -268,25 +268,27 @@ impl UdsTransport for KLineEcu {
             // After the first `78`, wait long enough to outlast the storm's
             // growing inter-frame gap, so we only conclude "quiet" once the ECU
             // is truly done — not mid-storm (which leaves it wedged).
-            let read_to = if last_pending.is_some() { timeout.max(PENDING_READ_TIMEOUT) } else { timeout };
+            let read_to =
+                if last_pending.is_some() { timeout.max(PENDING_READ_TIMEOUT) } else { timeout };
             match self.chan.read(read_to) {
                 Ok(raw) => {
                     let resp = strip_header(&raw.data)?.to_vec();
                     if is_response_pending(&resp) {
-                        last_pending = Some(resp);
                         if start.elapsed() >= MAX_PENDING_TIME {
-                            return self.recover_from_storm(last_pending.unwrap());
+                            return self.recover_from_storm(resp);
                         }
+                        last_pending = Some(resp);
                         continue;
                     }
                     return Ok(resp); // real application response
                 }
-                Err(Error::Timeout(_)) if last_pending.is_some() => {
-                    // Streamed pending, then quiet: this LID never resolves and
-                    // the ECU is now wedged — recover it for the next request.
-                    return self.recover_from_storm(last_pending.unwrap());
-                }
                 Err(e @ Error::Timeout(_)) => {
+                    if let Some(nrc) = last_pending {
+                        // Streamed pending, then quiet: this LID never resolves
+                        // and the ECU is now wedged — recover it for the next
+                        // request.
+                        return self.recover_from_storm(nrc);
+                    }
                     // Silent LID: no answer, no pending. A silent LID can leave a
                     // K-line ECU unresponsive to *subsequent* requests — the
                     // "answers 21 00 but every live LID after the first
@@ -325,7 +327,10 @@ mod tests {
     #[test]
     fn strip_recovers_service_bytes() {
         // 0x83 F0 98 61 0D 09  ->  61 0D 09
-        assert_eq!(strip_header(&[0x83, 0xf0, 0x98, 0x61, 0x0d, 0x09]).unwrap(), &[0x61, 0x0d, 0x09]);
+        assert_eq!(
+            strip_header(&[0x83, 0xf0, 0x98, 0x61, 0x0d, 0x09]).unwrap(),
+            &[0x61, 0x0d, 0x09]
+        );
         // 0x82 F0 98 61 0E     ->  61 0E
         assert_eq!(strip_header(&[0x82, 0xf0, 0x98, 0x61, 0x0e]).unwrap(), &[0x61, 0x0e]);
     }

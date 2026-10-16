@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use rmvci_core::transport::mock::Step;
 use rmvci_core::transport::{LatencyResult, MockTransport, Transport};
-use rmvci_net::{serve_connection, TcpTransport};
+use rmvci_net::{TcpTransport, serve_connection};
 
 #[test]
 fn primitives_round_trip_over_tcp() {

@@ -7,7 +7,7 @@
 //! use rmvci_core::{Device, DeviceConfig};
 //! use rmvci_net::TcpTransport;
 //!
-//! let io = TcpTransport::connect("192.168.1.50:6979")?;
+//! let io = TcpTransport::connect("192.0.2.10:6979")?;
 //! let dev = Device::open_transport(io, DeviceConfig::default())?;
 //! println!("firmware: {}", dev.firmware_version()?);
 //! # Ok::<(), rmvci_core::Error>(())
@@ -17,8 +17,8 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use rmvci_core::transport::{LatencyResult, Transport};
 use rmvci_core::TransportError;
+use rmvci_core::transport::{LatencyResult, Transport};
 
 use crate::wire;
 
@@ -80,9 +80,7 @@ impl TcpTransport {
         let mut ack = [0u8; 1];
         stream.read_exact(&mut ack)?;
         if ack[0] != wire::RESP_OK {
-            return Err(net_err(
-                "bridge rejected the handshake (protocol version mismatch?)",
-            ));
+            return Err(net_err("bridge rejected the handshake (protocol version mismatch?)"));
         }
         Ok(Self { stream })
     }
@@ -92,8 +90,7 @@ impl TcpTransport {
     fn transact(&mut self, body: &[u8], read_timeout: Duration) -> Result<Vec<u8>, TransportError> {
         wire::write_frame(&mut self.stream, body)?;
         // Duration of zero disables the timeout on some platforms; floor it.
-        self.stream
-            .set_read_timeout(Some(read_timeout.max(Duration::from_millis(1))))?;
+        self.stream.set_read_timeout(Some(read_timeout.max(Duration::from_millis(1))))?;
         wire::read_frame(&mut self.stream).map_err(Into::into)
     }
 }
@@ -103,9 +100,7 @@ impl TcpTransport {
 fn ok_payload(resp: &[u8]) -> Result<&[u8], TransportError> {
     match resp.first() {
         Some(&wire::RESP_OK) => Ok(&resp[1..]),
-        Some(&wire::RESP_ERR) => {
-            Err(net_err(String::from_utf8_lossy(&resp[1..]).into_owned()))
-        }
+        Some(&wire::RESP_ERR) => Err(net_err(String::from_utf8_lossy(&resp[1..]).into_owned())),
         _ => Err(net_err("malformed response frame")),
     }
 }

@@ -1,7 +1,6 @@
 //! Toyota's CAN live-data services `A8` / `A1` / `A2` — the CAN counterpart of
-//! the K-line per-LID poll, recovered from the forwarding-shim capture
-//! (`re/techstream/shim/mvci_calls.log`) and documented in
-//! `re/techstream/DATA_MODEL.md` §8a. Engine (`7E0`), Hybrid (`7E2`) and
+//! the K-line per-LID poll, recovered from a capture of Techstream driving a
+//! real Gen 2 Prius. Engine (`7E0`), Hybrid (`7E2`) and
 //! HV-Battery (`7E3`) serve live data through this three-step sequence over
 //! ISO-TP, not through individual `21`/`22` reads:
 //!

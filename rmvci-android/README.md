@@ -3,9 +3,8 @@
 JNI bindings so an Android app can drive the Mini-VCI through `rmvci-core`.
 
 > **Status: hardware-verified on a device.** A rooted moto g fast (Android 11)
-> drove the real Mini-VCI through this JNI path to the bench ECU —
-> `21 43` -> `61 43 7b 79` — via the [`prius-hvac-android`](../../prius-hvac-android)
-> app. [`BRINGUP.md`](BRINGUP.md) has the full account, including the four
+> drove the real Mini-VCI through this JNI path to a bench fake ECU
+> (`bench/isotp_responder.py`). [`BRINGUP.md`](BRINGUP.md) has the full account, including the four
 > boundary bugs the first device run flushed out (all fixed).
 
 ## How it fits together

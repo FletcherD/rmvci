@@ -1,13 +1,17 @@
 # rmvci-core
 
 A native Rust driver for the Toyota **Mini-VCI** J2534 cable (XHorse M-VCI:
-FTDI FT232R + NXP LPC2119 running "J2534 MINI V1.03"), on Linux, macOS and
-Windows.
+FTDI FT232R + NXP LPC2119 running "J2534 MINI V1.03"). Hardware-tested on
+Linux (x86_64 and aarch64) and Android; CI also builds it for macOS and Windows.
+
+> **Not affiliated with Toyota or XHorse.** An independent, reverse-engineered
+> driver that talks to real vehicle ECUs. Use at your own risk — no warranty.
 
 Everything this crate does on the wire is derived from reverse-engineering the
 cable's own firmware, and every frame is bench-verified against the real cable.
-It is the foundation the [`rmvci-diag`](https://crates.io/crates/rmvci-diag)
-diagnostic clients, the J2534 `cdylib`, and the Android JNI layer are built on.
+It is the foundation the J2534 `cdylib`, the Android JNI layer and the
+`rmvci-diag` KWP2000/UDS clients (same [repository](https://github.com/FletcherD/rmvci),
+not yet on crates.io) are built on.
 
 ## What's in it
 
@@ -23,8 +27,9 @@ diagnostic clients, the J2534 `cdylib`, and the Android JNI layer are built on.
 - **`KLineEcu`** — cooked ISO 14230 (K-line) bring-up: the full vendor
   `SET_CONFIG` timing sequence, FAST_INIT, response-pending draining, and
   automatic re-init of an ECU wedged by a pending storm or a silent LID.
-- **`codec`** — the sans-IO core: framing, DES-ECB, and inner-command builders,
-  usable with no I/O backend at all.
+- **`Transport`** — the five-method byte-transport trait the backends below
+  implement; plug in your own (the `rmvci-net` TCP bridge does), or use
+  `transport::MockTransport` to script byte-exact exchanges in tests.
 
 ## Backends (Cargo features)
 
@@ -53,13 +58,13 @@ use std::time::Duration;
 let dev = Device::open("/dev/ttyUSB0")?;
 let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
 let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
-let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?; // 61 43 <cmd> <act>
+let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?;
 ```
 
 K-line ECU (ISO 14230), with the full vendor bring-up done for you:
 
 ```rust
-use rmvci_core::{Device, KLineEcu};
+use rmvci_core::{Device, KLineEcu, UdsTransport};
 
 let dev = Device::open("/dev/ttyUSB0")?;
 let mut ecu = KLineEcu::connect(&dev, 0x98)?; // filters + 12 SET_CONFIG timings
@@ -67,8 +72,8 @@ ecu.fast_init()?;                              // StartCommunication, key bytes
 let reply = ecu.request(&[0x21, 0x0d], std::time::Duration::from_secs(1))?;
 ```
 
-For KWP2000/UDS request-building and response validation on top of this, use
-[`rmvci-diag`](https://crates.io/crates/rmvci-diag).
+`IsoTp` and `KLineEcu` both implement `UdsTransport`, so diagnostic code above
+them is bus-agnostic.
 
 ## Traps this device sets for you
 
@@ -88,8 +93,10 @@ Each cost real debugging time and is encoded in the API or the error messages:
 
 ## Design
 
-Sans-IO at the bottom (`codec`), one actor thread owning the port in the middle,
-typed channels at the top. The 24 captured wire vectors in
+Sans-IO at the bottom (the wire codec and ISO-TP state machines — pure, no I/O,
+property-tested and fuzzed), one actor thread owning the port in the middle,
+typed channels at the top. The codec modules are public for tests and
+wire-level tools but `#[doc(hidden)]`: they are not covered by semver. The 24 captured wire vectors in
 `tests/captured_vectors.rs` pin every frame to the genuine vendor DLL's output —
 they are ground truth, never "fixed" to match a code change.
 

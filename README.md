@@ -1,10 +1,10 @@
 # rMVCI
 
 A Rust driver for the Toyota **Mini-VCI** J2534 cable (XHorse M-VCI: FTDI
-FT232R + NXP LPC2119 running "J2534 MINI V1.03"), on Linux, macOS and
-Windows.
+FT232R + NXP LPC2119 running "J2534 MINI V1.03"). Hardware-tested on Linux
+(x86_64 and aarch64) and Android; CI also builds it for macOS and Windows.
 
-Three API surfaces over one implementation:
+Several API surfaces over one implementation:
 
 - **`rmvci-core`** — a native Rust API: `Device`, typed `Channel<P>`, and
   ISO 15765-2 both through the firmware and host-side over raw CAN — including
@@ -14,27 +14,46 @@ Three API surfaces over one implementation:
   firmware can back is wired through — periodic messages, the config/init/vbatt
   IOCTLs and programming voltage included (see *J2534 surface* below).
 - **`rmvci-android`** — JNI entry points so an Android app can drive the
-  cable, with Java owning the USB permission. *(Hardware-verified on a phone:
-  the `prius-hvac-android` app read `21 43` -> `61 43 7b 79` over the real
-  Mini-VCI.)*
+  cable, with Java owning the USB permission. *(Hardware-verified on a phone
+  driving the real Mini-VCI.)*
 - **`rmvci-net`** — a separate TCP-bridge crate: `TcpTransport` (PC side) forwards
   the five `Transport` primitives to a remote `rmvci-bridge` (phone side) that owns
   the real cable, so a PC can drive a cable plugged into a rooted Android phone at
   the car. Only raw bytes cross the wire. See [`rmvci-net/README.md`](rmvci-net/README.md).
 
 Everything the driver does on the wire is derived from reverse engineering
-the cable's own firmware (`../re/FINDINGS.md`) and is validated against
-hardware.
+the cable's own firmware and is validated against hardware.
+
+> **Not affiliated with Toyota or XHorse.** This is an independent,
+> reverse-engineered driver. It talks to real vehicle ECUs; active tests,
+> writes and configuration changes can alter vehicle behaviour. Use at your own
+> risk — there is no warranty (see the licence).
 
 ## Quick start
 
 ```sh
 cargo build --workspace
-cargo test --workspace          # 74 offline tests, no hardware needed
+cargo test --workspace          # offline tests, no hardware needed
 
-# Read the Prius A/C amplifier air-mix servo (7C4, KWP 21 43):
+# Read the Gen 2 Prius (NHW20) A/C amplifier air-mix damper position
+# (K-line ECU 0x98, KWP 21 0D actual / 21 13 target):
 cargo run -p prius-hvac -- /dev/serial/by-id/usb-XHorse_M-VCI_...-if00-port0
 ```
+
+K-line (ISO 14230), with the vendor bring-up sequence and responsePending
+handling built in:
+
+```rust
+use rmvci_core::{Device, KLineEcu, UdsTransport};
+use std::time::Duration;
+
+let dev = Device::open("/dev/ttyUSB0")?;
+let mut ecu = KLineEcu::connect(&dev, 0x98)?;   // SET_CONFIG timing + filter
+ecu.fast_init()?;                                // 81 -> key bytes
+let reply = ecu.request(&[0x21, 0x0d], Duration::from_secs(2))?; // 61 0D <b0>
+```
+
+CAN / ISO 15765-2:
 
 ```rust
 use rmvci_core::{CanId, Device, IsoTp, IsoTpConfig, IsoTpPath};
@@ -43,7 +62,7 @@ use std::time::Duration;
 let dev = Device::open("/dev/ttyUSB0")?;
 let cfg = IsoTpConfig::new(CanId::Std(0x7c4), CanId::Std(0x7cc));
 let mut tp = IsoTp::new(&dev, cfg, IsoTpPath::Firmware)?;
-let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?; // 61 43 <cmd> <act>
+let reply = tp.request(&[0x21, 0x43], Duration::from_secs(2))?;
 ```
 
 ## Traps this device sets for you
@@ -120,7 +139,7 @@ it — this is a general J2534 driver, not just a Prius reader:
 > framing (assumed `[ILEN][0x0e][value u32 LE]`), and whether the firmware
 > leaves the extended-addressing byte at the head of the reassembled reply
 > (`IsoTp::recv` on the firmware path strips it when RxStatus 0x80 is set). Run
-> `re/bench/isotp_responder_extaddr.py` with the `live_can_extended_addressing`
+> `bench/isotp_responder_extaddr.py` with the `live_can_extended_addressing`
 > / `live_ioctl_readback` tests to settle them.
 
 ## Which ISO-TP path?
@@ -136,7 +155,7 @@ it — this is a general J2534 driver, not just a Prius reader:
 | Speed | fast (segmentation on the MCU) | ~20–35 ms per frame — every frame is a USB round trip |
 
 One `IsoTp` type serves both, so switching is one argument. Use the firmware
-path for short requests (the `21 43` case); use the host path when
+path for short requests; use the host path when
 correctness on long or flow-controlled transfers matters more than speed.
 Through the J2534 shim the choice is the `RMVCI_HOST_ISOTP` ConnectFlag; in the
 native API it is the `IsoTpPath` passed to `IsoTp::new`.
@@ -169,7 +188,7 @@ device-level query alone cannot:
 | **900 s** | **ok** | **ok** | **ok** |
 
 After 15 minutes of complete silence the DES session, the connected channel,
-its acceptance filter and a real `21 43` exchange all still work. So
+its acceptance filter and a real request/response exchange all still work. So
 `DeviceConfig::keepalive` defaults to `None` and rMVCI sends nothing when it
 has nothing to say.
 
@@ -184,8 +203,8 @@ has its own P3 timeout at the *ECU*, which your application must service.
 
 ### The firmware's ISO-TP transmit really does ignore flow control
 
-`re/FINDINGS.md` §10.3 derived this from firmware disassembly but had never
-tested it against a peer that stresses it. `re/bench/isotp_fc_probe.py` does:
+Firmware disassembly predicted this; `bench/isotp_fc_probe.py` confirms it
+against a peer that stresses it:
 it answers a First Frame with `FC BS=2 STmin=50ms` and measures what comes
 back. Sending the same 60-byte payload down each path:
 
@@ -243,7 +262,7 @@ It takes the interface away from `ftdi_sio` while open, so the
 
 **Measured on the cable** (`usb_vs_serial_latency`), median per exchange:
 
-| | per `21 43` exchange |
+| | per request/response exchange |
 |---|---|
 | tty, latency timer at the 16 ms default | 48.0 ms |
 | raw USB, timer set to 2 ms by control transfer | **30.0 ms** |
@@ -273,14 +292,16 @@ byte-exact from libMVCI's `mvci_test.c` (real bytes from the vendor
 tests** over the codec and the ISO-TP machines, and **scripted-mock session
 tests** that assert exact wire traffic without hardware.
 
-Live tests need the cable; the CAN ones also need the bench fake ECU:
+Live tests need the cable; the CAN ones also need a fake ECU on the bus. The
+`bench/` scripts are [uv](https://docs.astral.sh/uv/) scripts that drive a
+CH340 "USB-CAN Analyzer" wired to the cable's OBD pins 6/14/4 (CAN-H/CAN-L/GND):
 
 ```sh
-python3 ../re/bench/isotp_responder.py /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -v &
+./bench/isotp_responder.py /dev/serial/by-id/usb-1a86_USB_Serial-if00-port0 -v &
 RMVCI_PORT=... cargo test --test live live_can -- --ignored --nocapture
 
 # Extended/mixed addressing (settles the RE-only strip-offset question):
-python3 ../re/bench/isotp_responder_extaddr.py -v &
+./bench/isotp_responder_extaddr.py -v &
 RMVCI_PORT=... cargo test --test live live_can_extended -- --ignored --nocapture
 
 # Periodic emission, and the GET_CONFIG/READ_VBATT reply layouts:
@@ -302,13 +323,17 @@ cargo +nightly fuzz run fuzz_deframe -- -max_total_time=60
 ```
 rmvci-core/src/
   codec/       sans-IO wire protocol: framing, DES-ECB, deframer, inner commands
-  transport/   Transport trait; serialport backend, scripted mock
+  transport/   Transport trait; serial, USB (nusb), JNI and scripted-mock backends
   session/     port-owning actor, handshake, Device, RawChannel, Channel<P>
-  isotp/       sans-IO Tx/Rx machines + the two ISO-TP clients
+  isotp/       sans-IO Tx/Rx machines + the ISO-TP client (both paths)
+  kline.rs     KLineEcu: ISO 14230 framing, vendor bring-up, pending drain
+rmvci-diag/    KWP2000 / UDS clients over any UdsTransport (not yet released)
+rmvci-net/     TCP bridge: drive a cable plugged into another machine (not yet released)
 rmvci-j2534/   the 14 PassThru exports (desktop only — nothing loads J2534 on Android)
-rmvci-android/ JNI entry points for an Android app (compiles for aarch64, untested on a
-               device — see rmvci-android/BRINGUP.md for the on-device test plan)
+rmvci-android/ JNI entry points for an Android app
 examples/prius-hvac/
+bench/         fake-ECU and flow-control probe scripts for the live tests
+fuzz/          cargo-fuzz targets
 ```
 
 The codec and the ISO-TP machines are **sans-IO**: pure functions and state

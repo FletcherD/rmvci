@@ -180,4 +180,3 @@ impl<T: UdsTransport> Kwp2000<T> {
         self.send(KwpCommand::WriteDataByLocalIdentifier, &d)
     }
 }
-

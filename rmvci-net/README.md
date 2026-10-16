@@ -29,6 +29,11 @@ locally on the PC; only raw cable bytes cross the wire.
   time** (the cable has a single RX owner); the transport is opened once and
   reused, and each fresh PC-side `Device` re-runs the DTR/RTS reset to resync.
 
+> **No authentication or encryption.** Anyone who can reach the bridge's port
+> can drive the cable — and through it the car's ECUs. `rmvci-bridge` listens
+> on `0.0.0.0` by default; run it only on a network you control, or bind it to
+> a specific interface with `--listen`.
+
 ## Use it
 
 PC side, in your own binary (or use the bundled `rmvci-remote`):
@@ -37,7 +42,7 @@ PC side, in your own binary (or use the bundled `rmvci-remote`):
 use rmvci_core::{Device, DeviceConfig};
 use rmvci_net::TcpTransport;
 
-let io  = TcpTransport::connect("192.168.1.50:6979")?;
+let io  = TcpTransport::connect("192.0.2.10:6979")?;
 let dev = Device::open_transport(io, DeviceConfig::default())?;
 println!("firmware: {}", dev.firmware_version()?);
 // dev now behaves exactly as a locally-attached cable: connect channels,
@@ -56,18 +61,10 @@ rmvci-bridge --listen 0.0.0.0:7000  # bind elsewhere
 Bundled demo client (proves the round trip end to end):
 
 ```sh
-rmvci-remote 192.168.1.50:6979              # open + print firmware version
-rmvci-remote 192.168.1.50:6979 --hvac       # then read CAN 7C4 / KWP 21 43
-rmvci-remote 192.168.1.50:6979 --hvac --watch --isotp host
+rmvci-remote 192.0.2.10:6979              # open + print firmware version
+rmvci-remote 192.0.2.10:6979 --hvac       # then read CAN 7C4 / KWP 21 43
+rmvci-remote 192.0.2.10:6979 --hvac --watch --isotp host
 ```
-
-The hands-on diagnostic apps `diag-cmd` (interactive REPL) and `diag-scan`
-(whole-vehicle live scan with real names + values) moved to the standalone
-[`tsdiag`](../../tsdiag/README.md) crate, which drives **any** transport — a
-local cable, USB, or this bridge — and decodes against the Techstream
-extraction. The A/C servo read (K-line `0x98`, proven live 2026-08-09) is now
-`diag-scan --transport <addr> --ecu A_C_P3.ddb --watch`. `diag-cmd` keeps the
-`--ecu`/`--can`/`--session`/`--tp-each` flags described below.
 
 Some K-line ECUs (A/C amp, Immobiliser) answer `21 <LID>` reads straight after
 FAST_INIT; others (ABS, Body, Gateway, EMPS, Transmission) answer only their
@@ -75,14 +72,14 @@ FAST_INIT; others (ABS, Body, Gateway, EMPS, Transmission) answer only their
 `--session 81 --tp-each`. A few LIDs (e.g. A/C `21 52`, DTC read `18`) make the
 ECU stream `7F .. 78` responsePending forever, which wedges it; `KLineEcu`
 detects this, surfaces the NRC, and auto re-FAST_INITs so the next request still
-works (so a `sweep` survives storm LIDs). See `re/techstream/LIVE_VALIDATION_2026-08-09.md`.
+works (so a `sweep` survives storm LIDs).
 
 Raw K-line frame observer (no responsePending drain — shows the whole
 pending→final sequence + timing; sends a `then`-separated request sequence):
 
 ```sh
-kraw 192.168.1.207:6979 98 18 00 ff 00              # watch a DTC read stream 78s
-kraw 192.168.1.207:6979 29 21 00 then 10 81 then 21 01   # probe a session flow
+kraw 192.0.2.10:6979 98 18 00 ff 00              # watch a DTC read stream 78s
+kraw 192.0.2.10:6979 29 21 00 then 10 81 then 21 01   # probe a session flow
 ```
 
 Both `rmvci_core::KLineEcu` (K-line) and `IsoTp` (CAN) are `UdsTransport`,

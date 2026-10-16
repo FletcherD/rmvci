@@ -95,13 +95,12 @@ fn live_kline_regression() {
     }
 }
 
-/// Reproduce the exact K-line frames the **forwarding path** (v18 shim ->
-/// ts-j2534-rpc -> RawChannel) puts on the wire, so a usbmon capture can be
-/// diffed byte-for-byte against the genuine XHorse driver's capture
-/// (re/techstream/dll-sniff). Same inputs v18 sends: connect 10400, the three
+/// Reproduce the exact K-line frames a J2534 host forwarding Techstream v18's
+/// calls onto a `RawChannel` puts on the wire, so a usbmon capture can be
+/// diffed byte-for-byte against the genuine XHorse driver's capture. Same inputs v18 sends: connect 10400, the three
 /// header filters in v18's order, the 12 SET_CONFIG params with DATA_RATE=10400,
 /// then FAST_INIT `68 6a f0 81`. Deliberately emits **no** clear before
-/// FAST_INIT: ts-j2534-rpc no-ops v18's CLEAR_RX (ioctl 0x8), so nothing reaches
+/// FAST_INIT: the forwarding host no-ops v18's CLEAR_RX (ioctl 0x8), so nothing reaches
 /// the cable there — that suppression is exactly what this repro must preserve.
 #[test]
 #[ignore = "needs the Mini-VCI cable (set RMVCI_PORT); usbmon-capture alongside"]
@@ -140,7 +139,7 @@ fn live_kline_v18_forwarding_repro() {
         ch.set_config(p, v).unwrap_or_else(|e| panic!("SET_CONFIG {p}: {e}"));
     }
     // HYPOTHESIS: the cable needs a clear right before FAST_INIT. The genuine
-    // driver sends CLEAR_RX here; the forwarding path (ts-j2534-rpc) no-ops
+    // driver sends CLEAR_RX here; the forwarding path no-ops
     // v18's CLEAR_RX, so nothing reaches the cable and FAST_INIT returns [08].
     // Toggle with RMVCI_CLEAR=1 to prove it.
     if std::env::var("RMVCI_CLEAR").is_ok() {
@@ -159,11 +158,11 @@ fn live_kline_v18_forwarding_repro() {
 }
 
 /// M4: both ISO-TP paths against the bench fake ECU
-/// (`re/bench/isotp_responder.py` on the CH340 USB-CAN analyzer):
+/// (`bench/isotp_responder.py` on the CH340 USB-CAN analyzer):
 /// `21 43` -> single-frame `61 43 xx xx`, `21 44` -> 40-byte multi-frame.
 ///
 /// ```sh
-/// python3 re/bench/isotp_responder.py -v &
+/// ./bench/isotp_responder.py -v &
 /// RMVCI_PORT=... cargo test --test live live_can -- --ignored --nocapture
 /// ```
 #[test]
@@ -215,15 +214,15 @@ fn live_can_firmware_vs_host() {
     println!("both paths byte-identical");
 }
 
-/// Extended/mixed addressing against `re/bench/isotp_responder_extaddr.py`.
+/// Extended/mixed addressing against `bench/isotp_responder_extaddr.py`.
 /// This is the experiment that settles the one ext-addr behaviour resting on
-/// RE alone (FINDINGS §10.4): whether the firmware flags the reply with
+/// RE alone: whether the firmware flags the reply with
 /// RxStatus 0x80 and leaves the address byte at the head of the reassembled
 /// payload. The raw probe prints exactly what came back; the firmware-path and
 /// host-path assertions then prove the strip logic is right end to end.
 ///
 /// ```sh
-/// python3 re/bench/isotp_responder_extaddr.py -v &
+/// ./bench/isotp_responder_extaddr.py -v &
 /// RMVCI_PORT=... cargo test --test live live_can_extended -- --ignored --nocapture
 /// ```
 #[test]
@@ -290,13 +289,13 @@ fn live_can_extended_addressing() {
     println!("extended addressing OK on both paths");
 }
 
-/// Periodic messages (0x0F/0x10) against `re/bench/isotp_responder.py`: start a
+/// Periodic messages (0x0F/0x10) against `bench/isotp_responder.py`: start a
 /// periodic `21 43`, confirm the adapter re-emits it (the responder answers
 /// each time), then stop it and confirm the replies cease. A bogus StopPeriodic
 /// id must be rejected with InvalidMsgId.
 ///
 /// ```sh
-/// python3 re/bench/isotp_responder.py -v &
+/// ./bench/isotp_responder.py -v &
 /// RMVCI_PORT=... cargo test --test live live_periodic -- --ignored --nocapture
 /// ```
 #[test]
@@ -386,7 +385,7 @@ fn live_ioctl_readback() {
 /// If stage 3 fails it then tries to recover, which says what a driver would
 /// have to *do* about it: reinstall the filter, or reconnect the channel.
 ///
-/// Needs `re/bench/isotp_responder.py` running (stage 3 talks to it).
+/// Needs `bench/isotp_responder.py` running (stage 3 talks to it).
 #[test]
 #[ignore = "needs the cable + bench responder (set RMVCI_PORT); takes ~30 minutes"]
 fn live_idle_decay_characterisation() {
@@ -487,15 +486,14 @@ fn live_idle_decay_characterisation() {
     println!("\n(gaps tested up to {} s)", gaps_s.last().unwrap());
 }
 
-/// Send a multi-frame message so `re/bench/isotp_fc_probe.py` can measure
+/// Send a multi-frame message so `bench/isotp_fc_probe.py` can measure
 /// whether this path honours the flow control it is given.
 ///
-/// This is the experiment that settles the last claim in `re/FINDINGS.md`
-/// resting on static analysis alone (§10.3: the firmware's ISO-TP transmit
-/// ignores BS and STmin), and at the same time proves the host path fixes it.
+/// This is the experiment that settles a claim from firmware analysis (the
+/// firmware's ISO-TP transmit ignores BS and STmin), and at the same time proves the host path fixes it.
 ///
 /// ```sh
-/// python3 re/bench/isotp_fc_probe.py --bs 2 --stmin 50 &
+/// ./bench/isotp_fc_probe.py --bs 2 --stmin 50 &
 /// RMVCI_PORT=... cargo test --test live fc_firmware -- --ignored --nocapture
 /// RMVCI_PORT=... cargo test --test live fc_host     -- --ignored --nocapture
 /// ```
@@ -573,7 +571,7 @@ fn smoke_open_version_survives_idle() {
 /// membership), and takes the cable away from `ftdi_sio` while it runs.
 ///
 /// ```sh
-/// python3 re/bench/isotp_responder.py &
+/// ./bench/isotp_responder.py &
 /// RMVCI_USB_SERIAL=A69QL5OE cargo test --features usb --test live usb_ -- --ignored --nocapture
 /// ```
 #[cfg(feature = "usb")]

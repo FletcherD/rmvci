@@ -17,6 +17,7 @@ pub struct InvalidProtocolId(pub u32);
 
 /// Byte-level transport failure (serial port / USB).
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TransportError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -26,6 +27,7 @@ pub enum TransportError {
 
 /// Frame/inner codec failure — the bytes are structurally wrong.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum CodecError {
     #[error("frame too short ({0} bytes; minimum is 3)")]
     TooShort(usize),
@@ -57,6 +59,7 @@ pub enum CodecError {
 
 /// ISO-TP (ISO 15765-2) failure, host-side path.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum IsoTpError {
     #[error("payload of {0} bytes exceeds the 4095-byte ISO-TP limit")]
     PayloadTooLong(usize),
@@ -82,6 +85,7 @@ pub enum IsoTpError {
 
 /// Top-level driver error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error(transparent)]
     Transport(#[from] TransportError),

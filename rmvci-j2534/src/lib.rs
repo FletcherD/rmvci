@@ -393,8 +393,7 @@ pub unsafe extern "system" fn PassThruStartMsgFilter(
             let ext29 = flow.tx_flags & CAN_29BIT_ID != 0;
             let rx = CanId::from_wire(pattern.data[..4].try_into().unwrap(), ext29);
             let tx = CanId::from_wire(flow.data[..4].try_into().unwrap(), ext29);
-            let ext_addr = (flow.tx_flags & ISO15765_ADDR_TYPE != 0
-                && flow.data_size >= 5)
+            let ext_addr = (flow.tx_flags & ISO15765_ADDR_TYPE != 0 && flow.data_size >= 5)
                 .then_some(flow.data[4]);
             match tp.set_endpoints(tx, rx, ext_addr) {
                 Ok(()) => {

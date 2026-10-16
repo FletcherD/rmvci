@@ -1,7 +1,6 @@
 //! Wire-level constants and value types.
 //!
-//! Everything here mirrors behaviour verified on the cable's firmware — see
-//! `re/FINDINGS.md` in the parent project for the evidence.
+//! Everything here mirrors behaviour verified on the cable's firmware.
 
 use crate::error::InvalidProtocolId;
 

@@ -92,7 +92,9 @@ pub fn encode_latency(l: &LatencyResult) -> Vec<u8> {
 pub fn decode_latency(b: &[u8]) -> LatencyResult {
     match b.first() {
         Some(&LAT_SET) => LatencyResult::Set { millis: b.get(1).copied().unwrap_or(0) },
-        Some(&LAT_ALREADY_LOW) => LatencyResult::AlreadyLow { millis: b.get(1).copied().unwrap_or(0) },
+        Some(&LAT_ALREADY_LOW) => {
+            LatencyResult::AlreadyLow { millis: b.get(1).copied().unwrap_or(0) }
+        }
         Some(&LAT_FAILED) => {
             LatencyResult::Failed { reason: String::from_utf8_lossy(&b[1..]).into_owned() }
         }

@@ -1,6 +1,6 @@
 [package]
 name = "prius-hvac"
-description = "Read the Gen 2 Prius A/C amplifier air-mix servo position (7C4 / 21 43) through the Mini-VCI cable"
+description = "Read the Gen 2 Prius (NHW20) A/C amplifier air-mix damper position over K-line through the Mini-VCI cable"
 # Example binary, not a registry crate.
 publish = false
 version.workspace = true

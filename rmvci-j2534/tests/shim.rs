@@ -159,10 +159,14 @@ fn host_device_steps() -> Vec<Step> {
     let mut steps = handshake_steps();
 
     // Connect proto 5 (the vendor host-isotp flag is stripped -> flags 0).
-    steps.push(Step::exchange(enc(&inner::connect(ProtocolId::Can, 0, 500_000)), status_reply(0x07, 0x00)));
+    steps.push(Step::exchange(
+        enc(&inner::connect(ProtocolId::Can, 0, 500_000)),
+        status_reply(0x07, 0x00),
+    ));
     // set_endpoints installs an exact PASS filter on rx (7cc); first id 0x000e7a00.
     steps.push(Step::exchange(
-        enc(&inner::start_filter(ProtocolId::Can, 0x000e_7a00, 1, &[0xff; 4], &RX, None, 4).unwrap()),
+        enc(&inner::start_filter(ProtocolId::Can, 0x000e_7a00, 1, &[0xff; 4], &RX, None, 4)
+            .unwrap()),
         status_reply(0x0b, 0x00),
     ));
 
@@ -413,7 +417,13 @@ fn shim_end_to_end() {
         assert_eq!(rmvci_j2534::PassThruOpen(std::ptr::null(), &mut hdev), STATUS_NOERROR);
         let mut hch = 0;
         assert_eq!(
-            rmvci_j2534::PassThruConnect(hdev, ISO15765 as _, RMVCI_HOST_ISOTP as _, 500_000, &mut hch),
+            rmvci_j2534::PassThruConnect(
+                hdev,
+                ISO15765 as _,
+                RMVCI_HOST_ISOTP as _,
+                500_000,
+                &mut hch
+            ),
             STATUS_NOERROR
         );
         // Flow-control filter carries the endpoints: pattern = rx (7cc), flow = tx (7c4).
@@ -436,7 +446,10 @@ fn shim_end_to_end() {
         // Small round trip through the host path.
         let hw = boxed_msg(&[0x00, 0x00, 0x07, 0xc4, 0x21, 0x43], 0);
         let mut hn = 1u64 as _;
-        assert_eq!(rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(hw), &mut hn, 0), STATUS_NOERROR);
+        assert_eq!(
+            rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(hw), &mut hn, 0),
+            STATUS_NOERROR
+        );
         let mut hr: Box<PassthruMsg> = Box::new(std::mem::zeroed());
         let mut hn = 1u64 as _;
         assert_eq!(rmvci_j2534::PassThruReadMsgs(hch, &mut *hr, &mut hn, 1000), STATUS_NOERROR);
@@ -451,7 +464,10 @@ fn shim_end_to_end() {
         }
         big.data_size = 264;
         let mut hn = 1u64 as _;
-        assert_eq!(rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(big), &mut hn, 0), STATUS_NOERROR);
+        assert_eq!(
+            rmvci_j2534::PassThruWriteMsgs(hch, Box::into_raw(big), &mut hn, 0),
+            STATUS_NOERROR
+        );
 
         assert_eq!(rmvci_j2534::PassThruDisconnect(hch), STATUS_NOERROR);
         assert_eq!(rmvci_j2534::PassThruClose(hdev), STATUS_NOERROR);

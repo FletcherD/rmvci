@@ -1,8 +1,7 @@
 //! Phone-side server: owns one real cable [`Transport`] and executes the
 //! primitives a remote [`TcpTransport`](crate::TcpTransport) forwards to it.
 //!
-//! The cable has a single global RX owner (see the parent project's
-//! `re/FINDINGS.md`), so the bridge serves **one client at a time**: the
+//! The cable has a single global RX owner, so the bridge serves **one client at a time**: the
 //! transport is opened once and reused across sequential connections, and each
 //! fresh PC-side [`Device`](rmvci_core::Device) re-runs the DTR/RTS reset
 //! handshake (forwarded as `set_modem`) to resynchronise.
@@ -41,10 +40,7 @@ pub fn serve<T: Transport>(listener: TcpListener, mut transport: T) -> io::Resul
 
 /// Handle one client from hello to disconnect. Public so a caller that has
 /// already accepted a stream (or a test) can drive a single session.
-pub fn serve_connection<T: Transport>(
-    mut stream: TcpStream,
-    transport: &mut T,
-) -> io::Result<()> {
+pub fn serve_connection<T: Transport>(mut stream: TcpStream, transport: &mut T) -> io::Result<()> {
     let mut hello = [0u8; 5];
     stream.read_exact(&mut hello)?;
     if &hello[..4] != wire::MAGIC {

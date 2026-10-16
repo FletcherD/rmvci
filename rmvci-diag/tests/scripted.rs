@@ -93,10 +93,8 @@ fn freeze_frame_uses_raw_sid_12() {
 
 #[test]
 fn session_and_tester_present() {
-    let mut kwp = client([
-        (vec![0x10, 0x81], vec![0x50, 0x81]),
-        (vec![0x3e, 0x01], vec![0x7e, 0x01]),
-    ]);
+    let mut kwp =
+        client([(vec![0x10, 0x81], vec![0x50, 0x81]), (vec![0x3e, 0x01], vec![0x7e, 0x01])]);
     assert_eq!(kwp.start_diagnostic_session(0x81).unwrap(), vec![0x81]);
     kwp.tester_present(true).unwrap();
 }

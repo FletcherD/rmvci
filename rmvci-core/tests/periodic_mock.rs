@@ -1,7 +1,6 @@
 //! START/STOP_PERIODIC_MSG (0x0F/0x10). There is no captured vendor vector for
 //! periodic messages, so these tests pin the exact ARGS layout from the
-//! firmware RE (`re/FINDINGS.md` §6: ARGS 16+N = proto, MsgID, TxFlags,
-//! interval, data) and drive a full round trip over MockTransport. The MsgID
+//! firmware RE (ARGS 16+N = proto, MsgID, TxFlags, interval, data) and drive a full round trip over MockTransport. The MsgID
 //! is host-assigned, so the driver sends the id it was given verbatim.
 
 use std::sync::Arc;
@@ -27,7 +26,9 @@ fn handshake_steps() -> Vec<Step> {
         Step::exchange(frame::encode_plain(&[]).unwrap(), Vec::new()),
         Step::exchange(
             frame::encode_plain(&inner::identify()).unwrap(),
-            vec![0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9],
+            vec![
+                0x0e, 0x00, 0x09, 0x00, 0x01, 0xb0, 0xcb, 0x49, 0x68, 0x07, 0x45, 0xc8, 0x7f, 0xa9,
+            ],
         ),
     ]
 }
@@ -80,7 +81,10 @@ fn stop_periodic_wire_layout() {
 fn periodic_round_trip_over_mock() {
     let msg = [0x00, 0x00, 0x07, 0xdf, 0x02, 0x01, 0x00];
     let mut steps = handshake_steps();
-    steps.push(Step::exchange(enc(&inner::connect(ProtocolId::Can, 0, 500_000)), status_reply(0x07)));
+    steps.push(Step::exchange(
+        enc(&inner::connect(ProtocolId::Can, 0, 500_000)),
+        status_reply(0x07),
+    ));
     steps.push(Step::exchange(
         enc(&inner::start_periodic(ProtocolId::Can, 0x000e_7b00, 0, 500, &msg).unwrap()),
         status_reply(0x0f),
